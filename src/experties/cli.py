@@ -1,15 +1,10 @@
 """
 Command-line interface for Experties-CLI.
 
-This wires the pure logic (rank_engine, duration) and the storage layer
-(database) into the actual `experties` commands. Kept as thin as
+This wires the pure logic (rank_engine, duration, timer) and the storage
+layer (database) into the actual `experties` commands. Kept as thin as
 reasonably possible — anything that can be unit tested without a terminal
 lives elsewhere; this file is mostly formatting and command wiring.
-
-Read-only commands (list, stats, rank-table) and manual logging (log) are
-here. The live timer (`experties start`) lands in a later checkpoint —
-it needs sleep detection and a Rich Live display, which are enough on
-their own to deserve their own module (timer.py).
 """
 
 from __future__ import annotations
@@ -23,6 +18,7 @@ from rich.table import Table
 from experties.database import Database, SkillNotFoundError
 from experties.duration import parse_duration
 from experties.rank_engine import RANK_TABLE, crossed_rank_up, get_rank_status
+from experties.timer import run_timer
 
 app = typer.Typer(
     name="experties",
@@ -144,6 +140,24 @@ def rank_table() -> None:
     console.print(table)
 
 
+def _commit_and_report(skill: str, hours: float, note: Optional[str]) -> None:
+    """Shared by `log` and `start`: write the session, print the new
+    total, and announce any rank-ups crossed."""
+    with Database() as db:
+        existing = db.get_skill(skill)
+        hours_before = db.get_total_hours(skill) if existing is not None else 0.0
+        db.log_session(skill, hours, note=note)
+        hours_after = hours_before + hours
+
+    console.print(f'[green]Logged {hours:.2f}h to "{skill}".[/green] Total: {hours_after:.1f}h')
+
+    for rank in crossed_rank_up(hours_before, hours_after):
+        console.print(f"[bold gold1]LEVEL UP![/bold gold1] {skill} is now [bold]{rank.name}[/bold] \U0001F389")
+    # notifications.py (native macOS notification + sound) hooks in right
+    # here in a later checkpoint — it'll take the same crossed-rank list
+    # and fire one notification per tier crossed.
+
+
 @app.command()
 def log(
     skill: str = typer.Argument(..., help="Skill name"),
@@ -157,20 +171,23 @@ def log(
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(code=1)
 
-    with Database() as db:
-        existing = db.get_skill(skill)
-        hours_before = db.get_total_hours(skill) if existing is not None else 0.0
+    _commit_and_report(skill, hours, note)
 
-        db.log_session(skill, hours, note=note)
-        hours_after = hours_before + hours
 
-    console.print(f'[green]Logged {hours:.2f}h to "{skill}".[/green] Total: {hours_after:.1f}h')
+@app.command()
+def start(skill: str = typer.Argument(..., help="Skill name")) -> None:
+    """Start a live focus-session timer for a skill."""
+    console.print(f'Starting timer for "{skill}"...\n')
+    result = run_timer(skill)
 
-    for rank in crossed_rank_up(hours_before, hours_after):
-        console.print(f"[bold gold1]LEVEL UP![/bold gold1] {skill} is now [bold]{rank.name}[/bold] \U0001F389")
-    # notifications.py (native macOS notification + sound) hooks in right
-    # here in a later checkpoint — it'll take the same crossed-rank list
-    # and fire one notification per tier crossed.
+    if result.cancelled or result.elapsed_seconds <= 0:
+        console.print("[yellow]Session cancelled — nothing logged.[/yellow]")
+        raise typer.Exit(code=0)
+
+    hours = result.elapsed_seconds / 3600
+    note = typer.prompt("Add a note? (press Enter to skip)", default="", show_default=False)
+
+    _commit_and_report(skill, hours, note or None)
 
 
 @app.command()
