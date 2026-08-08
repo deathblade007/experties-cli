@@ -116,3 +116,30 @@ def test_note_is_stripped_and_blank_becomes_none(db):
     assert session.note is None
     session2 = db.log_session("Coding", 1.0, note="  solved a bug  ")
     assert session2.note == "solved a bug"
+
+
+def test_get_session_by_id_returns_none_when_missing(db):
+    assert db.get_session_by_id(999) is None
+
+
+def test_get_session_by_id_returns_the_session(db):
+    logged = db.log_session("Coding", 1.5, note="warmup")
+    fetched = db.get_session_by_id(logged.id)
+    assert fetched == logged
+
+
+def test_delete_session_removes_it_and_returns_true(db):
+    session = db.log_session("Coding", 2.0)
+    assert db.delete_session(session.id) is True
+    assert db.get_session_by_id(session.id) is None
+    assert db.get_total_hours("Coding") == 0.0
+
+
+def test_delete_session_returns_false_for_unknown_id(db):
+    assert db.delete_session(999) is False
+
+
+def test_delete_session_does_not_delete_the_skill(db):
+    session = db.log_session("Coding", 2.0)
+    db.delete_session(session.id)
+    assert db.get_skill("Coding") is not None

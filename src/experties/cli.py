@@ -115,11 +115,12 @@ def stats(
         return
 
     table = Table(title=f"Recent sessions ({len(sessions)})")
+    table.add_column("ID", justify="right")
     table.add_column("When")
     table.add_column("Hours", justify="right")
     table.add_column("Note")
     for s in sessions:
-        table.add_row(s.logged_at, f"{s.hours:.2f}h", s.note or "")
+        table.add_row(str(s.id), s.logged_at, f"{s.hours:.2f}h", s.note or "")
     console.print(table)
 
 
@@ -170,6 +171,35 @@ def log(
     # notifications.py (native macOS notification + sound) hooks in right
     # here in a later checkpoint — it'll take the same crossed-rank list
     # and fire one notification per tier crossed.
+
+
+@app.command()
+def delete(
+    session_id: int = typer.Argument(..., help="Session id to delete — find it via `experties stats <skill>`"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt"),
+) -> None:
+    """Delete a single logged session by its id."""
+    with Database() as db:
+        session = db.get_session_by_id(session_id)
+        if session is None:
+            console.print(f"[red]No session with id {session_id}.[/red]")
+            raise typer.Exit(code=1)
+
+        skill = db.get_skill_by_id(session.skill_id)
+        skill_name = skill.name if skill else "(unknown skill)"
+        note_part = f' — "{session.note}"' if session.note else ""
+        console.print(
+            f'Session #{session.id}: {session.hours:.2f}h on "{skill_name}", '
+            f"logged {session.logged_at}{note_part}"
+        )
+
+        if not yes and not typer.confirm("Delete this session?"):
+            console.print("Cancelled.")
+            raise typer.Exit(code=0)
+
+        db.delete_session(session_id)
+
+    console.print(f"[green]Deleted session #{session_id}.[/green]")
 
 
 if __name__ == "__main__":

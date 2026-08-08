@@ -135,6 +135,12 @@ class Database:
         ).fetchone()
         return _row_to_skill(row) if row else None
 
+    def get_skill_by_id(self, skill_id: int) -> Skill | None:
+        row = self._conn.execute(
+            "SELECT * FROM skills WHERE id = ?", (skill_id,)
+        ).fetchone()
+        return _row_to_skill(row) if row else None
+
     def get_or_create_skill(self, name: str) -> Skill:
         return self.get_skill(name) or self.add_skill(name)
 
@@ -196,6 +202,21 @@ class Database:
 
         rows = self._conn.execute(query, params).fetchall()
         return [_row_to_session(r) for r in rows]
+
+    def get_session_by_id(self, session_id: int) -> Session | None:
+        row = self._conn.execute(
+            "SELECT * FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        return _row_to_session(row) if row else None
+
+    def delete_session(self, session_id: int) -> bool:
+        """Delete one session by id. Returns True if a row was removed,
+        False if no session with that id existed. Deleting a session never
+        deletes the skill itself, even if it was the skill's only session —
+        the skill just goes back to however many hours are left (possibly 0)."""
+        cur = self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        self._conn.commit()
+        return cur.rowcount > 0
 
     # -- hours / totals --------------------------------------------------
 

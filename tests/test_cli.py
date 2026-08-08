@@ -9,14 +9,15 @@ import os
 from typer.testing import CliRunner
 
 from experties.cli import app
+from experties.database import Database
 
 runner = CliRunner()
 
 
-def _run(*args, db_path):
+def _run(*args, db_path, input=None):
     env = os.environ.copy()
     env["EXPERTIES_DB_PATH"] = str(db_path)
-    return runner.invoke(app, list(args), env=env)
+    return runner.invoke(app, list(args), env=env, input=input)
 
 
 def test_list_with_no_skills_shows_hint(tmp_path):
@@ -80,3 +81,37 @@ def test_rank_table_runs_and_lists_tiers(tmp_path):
     assert result.exit_code == 0
     assert "Unranked" in result.output
     assert "Grand Champion 3" in result.output
+
+
+def test_delete_with_yes_flag_removes_session(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("log", "Coding", "--time", "1h", db_path=db_path)
+    with Database(db_path) as db:
+        session_id = db.get_sessions("Coding")[0].id
+
+    result = _run("delete", str(session_id), "--yes", db_path=db_path)
+    assert result.exit_code == 0
+    assert "Deleted session" in result.output
+
+    with Database(db_path) as db:
+        assert db.get_total_hours("Coding") == 0.0
+
+
+def test_delete_unknown_id_errors(tmp_path):
+    db_path = tmp_path / "data.db"
+    result = _run("delete", "999", "--yes", db_path=db_path)
+    assert result.exit_code == 1
+    assert "No session with id" in result.output
+
+
+def test_delete_without_yes_prompts_and_can_be_declined(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("log", "Coding", "--time", "1h", db_path=db_path)
+    with Database(db_path) as db:
+        session_id = db.get_sessions("Coding")[0].id
+
+    result = _run("delete", str(session_id), db_path=db_path, input="n\n")
+    assert "Cancelled" in result.output
+
+    with Database(db_path) as db:
+        assert db.get_total_hours("Coding") == 1.0
