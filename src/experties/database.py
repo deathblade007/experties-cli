@@ -20,6 +20,7 @@ tests use Database(":memory:") cleanly.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -77,7 +78,13 @@ class SkillNotFoundError(Exception):
 
 
 class Database:
-    def __init__(self, db_path: str | Path = DEFAULT_DB_PATH):
+    def __init__(self, db_path: str | Path | None = None):
+        if db_path is None:
+            # Lets the CLI and tests point at a different file (or an
+            # in-memory DB) without changing any calling code — set
+            # EXPERTIES_DB_PATH before invoking `experties`.
+            db_path = os.environ.get("EXPERTIES_DB_PATH") or DEFAULT_DB_PATH
+
         if str(db_path) == ":memory:":
             self.db_path: str | Path = ":memory:"
         else:
