@@ -18,6 +18,7 @@ from rich.table import Table
 
 from experties.database import Database, SkillNotFoundError
 from experties.duration import parse_duration
+from experties.notifications import notify_all_level_ups
 from experties.rank_engine import RANK_TABLE, crossed_rank_up, get_rank_status
 from experties.timer import run_timer
 
@@ -189,11 +190,11 @@ def _commit_and_report(skill: str, hours: float, note: Optional[str]) -> None:
 
     console.print(f'[green]Logged {hours:.2f}h to "{skill}".[/green] Total: {hours_after:.1f}h')
 
-    for rank in crossed_rank_up(hours_before, hours_after):
+    leveled_up = crossed_rank_up(hours_before, hours_after)
+    for rank in leveled_up:
         console.print(f"[bold gold1]LEVEL UP![/bold gold1] {skill} is now [bold]{rank.name}[/bold] \U0001F389")
-    # notifications.py (native macOS notification + sound) hooks in right
-    # here in a later checkpoint — it'll take the same crossed-rank list
-    # and fire one notification per tier crossed.
+
+    notify_all_level_ups(skill, leveled_up)
 
 
 @app.command()
