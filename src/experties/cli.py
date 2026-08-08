@@ -9,6 +9,7 @@ lives elsewhere; this file is mostly formatting and command wiring.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional
 
 import typer
@@ -138,6 +139,43 @@ def rank_table() -> None:
         table.add_row(label, f"{rank.threshold_hours:.0f}h")
 
     console.print(table)
+
+
+@dataclass(frozen=True)
+class _CommandInfo:
+    name: str
+    description: str
+    example: str
+
+
+_COMMAND_REFERENCE: list[_CommandInfo] = [
+    _CommandInfo("list", "Show every skill, its rank, hours, and progress to the next rank.", "experties list"),
+    _CommandInfo("start", "Run a live focus-session timer for a skill.", "experties start Coding"),
+    _CommandInfo("log", "Manually log time spent on a skill.", 'experties log Coding --time 1h30m --note "fixed a bug"'),
+    _CommandInfo("stats", "Show rank progress and recent session history for one skill.", "experties stats Coding"),
+    _CommandInfo("rank-table", "Show the full rank ladder and required hours per tier.", "experties rank-table"),
+    _CommandInfo("delete", "Delete a single logged session by its id.", "experties delete 12"),
+    _CommandInfo("commands", "Show this list.", "experties commands"),
+]
+
+
+@app.command()
+def commands() -> None:
+    """List every built-in command with a short description and example."""
+    table = Table(title="Experties Commands")
+    table.add_column("Command", style="bold")
+    table.add_column("What it does")
+    table.add_column("Example", style="dim")
+
+    for cmd in _COMMAND_REFERENCE:
+        table.add_row(cmd.name, cmd.description, cmd.example)
+
+    console.print(table)
+    console.print(
+        "\n[dim]Plugin commands you've added won't show up in this curated list — "
+        "run [bold]experties --help[/bold] for the complete, live list including "
+        "plugins. See COMMANDS.md in the repo for full option details.[/dim]"
+    )
 
 
 def _commit_and_report(skill: str, hours: float, note: Optional[str]) -> None:

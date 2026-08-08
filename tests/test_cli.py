@@ -115,3 +115,11 @@ def test_delete_without_yes_prompts_and_can_be_declined(tmp_path):
 
     with Database(db_path) as db:
         assert db.get_total_hours("Coding") == 1.0
+
+
+def test_commands_lists_every_command(tmp_path):
+    db_path = tmp_path / "data.db"
+    result = _run("commands", db_path=db_path)
+    assert result.exit_code == 0
+    for name in ["list", "start", "log", "stats", "rank-table", "delete", "commands"]:
+        assert name in result.output

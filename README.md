@@ -6,15 +6,12 @@ Create skill tracks (e.g. Coding, Mathematics, Guitar), log timed focus
 sessions against them, and watch your rank climb an RPG-style tier ladder
 based on accumulated hours — all stored locally, with no cloud dependence.
 
-**Status:** early development. The rank engine and its tests are in place;
-the CLI itself is not runnable yet.
-
 ## Requirements
 
 - macOS
 - Python 3.11+
 
-## Development setup
+## Setup
 
 ```bash
 git clone <your-repo-url>
@@ -25,5 +22,17 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Usage instructions for the actual commands (`experties start`, `experties
-log`, etc.) will be added here once the CLI is built out.
+## Quick start
+
+```bash
+experties start Coding      # live timer
+experties log Coding --time 1h30m --note "fixed a bug"
+experties list
+experties stats Coding
+```
+
+See [COMMANDS.md](COMMANDS.md) for the full command reference, or run
+`experties commands` for a quick in-terminal summary.
+
+Data lives locally in `~/.experties/data.db` (override with the
+`EXPERTIES_DB_PATH` environment variable).
