@@ -18,6 +18,8 @@ it's the only place that will show plugin-added commands too.
 | `experties stats <skill>` | Show rank progress + recent sessions |
 | `experties rank-table` | Show the full rank ladder |
 | `experties delete <id>` | Delete a single logged session |
+| `experties skill rename <old> <new>` | Rename a skill (keeps its history) |
+| `experties skill delete <skill>` | Delete a skill and all its sessions |
 | `experties commands` | Quick in-terminal command summary |
 | `experties plugins` | Show loaded plugins |
 
@@ -132,6 +134,37 @@ experties delete 12 --yes   # skip the confirmation prompt
 | Option | Description |
 |---|---|
 | `--yes`, `-y` | Skip the "are you sure" prompt |
+
+---
+
+## `experties skill rename <old_name> <new_name>`
+
+Renames a skill. Its id and every session logged against it are
+unaffected — the full history moves to the new name.
+
+```bash
+experties skill rename Codnig Coding
+```
+
+Renaming to a name already used by a *different* skill fails. Renaming
+to the same name with different casing (`coding` → `Coding`) is fine.
+
+---
+
+## `experties skill delete <skill> [--yes]`
+
+Deletes a skill **and every session ever logged against it.** Unlike
+`experties delete <id>`, which only removes one session and leaves the
+skill in place, this takes the skill's entire history with it. There is
+no undo — back up `~/.experties/data.db` first if you're unsure.
+
+```bash
+experties skill delete Guitar
+experties skill delete Guitar --yes   # skip the confirmation prompt
+```
+
+It shows the skill's total hours and session count before asking you to
+confirm.
 
 ---
 

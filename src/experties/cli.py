@@ -18,7 +18,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from experties.database import Database, SkillNotFoundError
+from experties.database import Database, SkillAlreadyExistsError, SkillNotFoundError
 from experties.duration import parse_duration
 from experties.notifications import notify_all_level_ups
 from experties.plugins import DEFAULT_PLUGINS_DIR, load_plugins
@@ -159,6 +159,8 @@ _COMMAND_REFERENCE: list[_CommandInfo] = [
     _CommandInfo("stats", "Show rank progress and recent session history for one skill.", "experties stats Coding"),
     _CommandInfo("rank-table", "Show the full rank ladder and required hours per tier.", "experties rank-table"),
     _CommandInfo("delete", "Delete a single logged session by its id.", "experties delete 12"),
+    _CommandInfo("skill rename", "Rename a skill (keeps all its history).", "experties skill rename Coding Programming"),
+    _CommandInfo("skill delete", "Delete a skill and every session logged against it.", "experties skill delete Guitar"),
     _CommandInfo("commands", "Show this list.", "experties commands"),
     _CommandInfo("plugins", "Show the plugins directory and which plugin files are loaded.", "experties plugins"),
 ]
@@ -260,6 +262,59 @@ def delete(
         db.delete_session(session_id)
 
     console.print(f"[green]Deleted session #{session_id}.[/green]")
+
+
+skill_app = typer.Typer(help="Manage skills themselves — renaming or deleting a skill entirely.")
+
+
+@skill_app.command("rename")
+def skill_rename(
+    old_name: str = typer.Argument(..., help="Current skill name"),
+    new_name: str = typer.Argument(..., help="New skill name"),
+) -> None:
+    """Rename a skill. All of its sessions and history move with it."""
+    with Database() as db:
+        try:
+            renamed = db.rename_skill(old_name, new_name)
+        except SkillNotFoundError:
+            console.print(f'[red]No skill named "{old_name}".[/red]')
+            raise typer.Exit(code=1)
+        except SkillAlreadyExistsError:
+            console.print(f'[red]A skill named "{new_name}" already exists.[/red]')
+            raise typer.Exit(code=1)
+
+    console.print(f'[green]Renamed "{old_name}" to "{renamed.name}".[/green]')
+
+
+@skill_app.command("delete")
+def skill_delete(
+    name: str = typer.Argument(..., help="Skill to delete, including every session logged against it"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt"),
+) -> None:
+    """Delete a skill and every session ever logged against it. This cannot be undone."""
+    with Database() as db:
+        skill = db.get_skill(name)
+        if skill is None:
+            console.print(f'[red]No skill named "{name}".[/red]')
+            raise typer.Exit(code=1)
+
+        hours = db.get_total_hours(name)
+        session_count = len(db.get_sessions(name))
+        console.print(
+            f'[yellow]This permanently deletes "{skill.name}" and all {session_count} '
+            f"session(s) ({hours:.1f}h total). There's no undo.[/yellow]"
+        )
+
+        if not yes and not typer.confirm("Are you sure?"):
+            console.print("Cancelled.")
+            raise typer.Exit(code=0)
+
+        db.delete_skill(name)
+
+    console.print(f'[green]Deleted "{name}".[/green]')
+
+
+app.add_typer(skill_app, name="skill")
 
 
 @app.command()

@@ -160,3 +160,59 @@ def test_commands_reference_includes_plugins(tmp_path):
     db_path = tmp_path / "data.db"
     result = _run("commands", db_path=db_path)
     assert "plugins" in result.output
+
+
+def test_skill_rename_success(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("log", "Coding", "--time", "5h", db_path=db_path)
+    result = _run("skill", "rename", "Coding", "Programming", db_path=db_path)
+    assert result.exit_code == 0
+    assert "Renamed" in result.output
+
+    with Database(db_path) as db:
+        assert db.get_skill("Coding") is None
+        assert db.get_total_hours("Programming") == 5.0
+
+
+def test_skill_rename_unknown_skill_errors(tmp_path):
+    db_path = tmp_path / "data.db"
+    result = _run("skill", "rename", "Nope", "Something", db_path=db_path)
+    assert result.exit_code == 1
+    assert "No skill named" in result.output
+
+
+def test_skill_rename_to_existing_name_errors(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("log", "Coding", "--time", "1h", db_path=db_path)
+    _run("log", "Guitar", "--time", "1h", db_path=db_path)
+    result = _run("skill", "rename", "Coding", "Guitar", db_path=db_path)
+    assert result.exit_code == 1
+    assert "already exists" in result.output
+
+
+def test_skill_delete_with_yes_removes_skill_and_sessions(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("log", "Coding", "--time", "3h", db_path=db_path)
+    result = _run("skill", "delete", "Coding", "--yes", db_path=db_path)
+    assert result.exit_code == 0
+    assert "Deleted" in result.output
+
+    with Database(db_path) as db:
+        assert db.get_skill("Coding") is None
+
+
+def test_skill_delete_unknown_skill_errors(tmp_path):
+    db_path = tmp_path / "data.db"
+    result = _run("skill", "delete", "Nope", "--yes", db_path=db_path)
+    assert result.exit_code == 1
+    assert "No skill named" in result.output
+
+
+def test_skill_delete_without_yes_can_be_declined(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("log", "Coding", "--time", "3h", db_path=db_path)
+    result = _run("skill", "delete", "Coding", db_path=db_path, input="n\n")
+    assert "Cancelled" in result.output
+
+    with Database(db_path) as db:
+        assert db.get_skill("Coding") is not None

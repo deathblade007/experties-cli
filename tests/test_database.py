@@ -143,3 +143,69 @@ def test_delete_session_does_not_delete_the_skill(db):
     session = db.log_session("Coding", 2.0)
     db.delete_session(session.id)
     assert db.get_skill("Coding") is not None
+
+
+def test_rename_skill_changes_the_name(db):
+    db.log_session("Coding", 5.0)
+    renamed = db.rename_skill("Coding", "Programming")
+    assert renamed.name == "Programming"
+    assert db.get_skill("Coding") is None
+    assert db.get_skill("Programming") is not None
+
+
+def test_rename_skill_preserves_history(db):
+    db.log_session("Coding", 3.0)
+    db.log_session("Coding", 2.0)
+    renamed = db.rename_skill("Coding", "Programming")
+    assert db.get_total_hours("Programming") == 5.0
+    assert len(db.get_sessions("Programming")) == 2
+
+
+def test_rename_skill_raises_for_unknown_old_name(db):
+    with pytest.raises(SkillNotFoundError):
+        db.rename_skill("Nope", "Something")
+
+
+def test_rename_skill_raises_if_new_name_taken_by_different_skill(db):
+    db.add_skill("Coding")
+    db.add_skill("Guitar")
+    with pytest.raises(SkillAlreadyExistsError):
+        db.rename_skill("Coding", "Guitar")
+
+
+def test_rename_skill_allows_case_only_change_of_its_own_name(db):
+    db.add_skill("coding")
+    renamed = db.rename_skill("coding", "Coding")
+    assert renamed.name == "Coding"
+
+
+def test_rename_skill_rejects_empty_new_name(db):
+    db.add_skill("Coding")
+    with pytest.raises(ValueError):
+        db.rename_skill("Coding", "   ")
+
+
+def test_delete_skill_removes_it_and_returns_true(db):
+    db.add_skill("Coding")
+    assert db.delete_skill("Coding") is True
+    assert db.get_skill("Coding") is None
+
+
+def test_delete_skill_returns_false_for_unknown_skill(db):
+    assert db.delete_skill("Nope") is False
+
+
+def test_delete_skill_cascades_to_its_sessions(db):
+    db.log_session("Coding", 3.0)
+    db.log_session("Coding", 2.0)
+    db.delete_skill("Coding")
+    row = db._conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()
+    assert row["n"] == 0
+
+
+def test_delete_skill_does_not_affect_other_skills(db):
+    db.log_session("Coding", 3.0)
+    db.log_session("Guitar", 4.0)
+    db.delete_skill("Coding")
+    assert db.get_skill("Guitar") is not None
+    assert db.get_total_hours("Guitar") == 4.0

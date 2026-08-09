@@ -150,6 +150,51 @@ class Database:
         ).fetchall()
         return [_row_to_skill(r) for r in rows]
 
+    def rename_skill(self, old_name: str, new_name: str) -> Skill:
+        """
+        Rename a skill in place — its id and all its sessions are
+        unaffected, so its full history moves with the new name.
+
+        Renaming to the same name with different casing (e.g. "coding"
+        -> "Coding") is allowed. Renaming to a name already used by a
+        DIFFERENT skill raises SkillAlreadyExistsError, same as add_skill.
+        """
+        old_name = old_name.strip()
+        new_name = new_name.strip()
+        if not new_name:
+            raise ValueError("new skill name cannot be empty")
+
+        skill = self.get_skill(old_name)
+        if skill is None:
+            raise SkillNotFoundError(f'Skill "{old_name}" does not exist')
+
+        existing = self.get_skill(new_name)
+        if existing is not None and existing.id != skill.id:
+            raise SkillAlreadyExistsError(f'Skill "{new_name}" already exists')
+
+        self._conn.execute("UPDATE skills SET name = ? WHERE id = ?", (new_name, skill.id))
+        self._conn.commit()
+        return Skill(id=skill.id, name=new_name, created_at=skill.created_at)
+
+    def delete_skill(self, name: str) -> bool:
+        """
+        Delete a skill and every session logged against it. Returns True
+        if the skill existed and was removed, False if there was no such
+        skill.
+
+        This is the one place ON DELETE CASCADE (set up in the schema,
+        enforced via PRAGMA foreign_keys = ON in __init__) actually
+        matters — unlike delete_session(), which only ever removes one
+        session and never touches the skill it belongs to, this takes
+        the skill's entire history with it. There's no undo.
+        """
+        skill = self.get_skill(name)
+        if skill is None:
+            return False
+        self._conn.execute("DELETE FROM skills WHERE id = ?", (skill.id,))
+        self._conn.commit()
+        return True
+
     # -- sessions --------------------------------------------------------
 
     def log_session(
