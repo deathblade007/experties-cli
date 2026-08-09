@@ -57,6 +57,60 @@ def _validate_table(table: list[Rank]) -> None:
 
 _validate_table(RANK_TABLE)
 
+# Divisions: from Bronze 1 up through X (every rank that has a "next"
+# rank above the starter tiers), each rank's hour span to the *next*
+# rank is split into 4 even quarters — Division 1 at the rank's own
+# threshold, Division 2 at +25% of the span, Division 3 at +50%,
+# Division 4 at +75%. Reaching the next rank's own threshold (100% of
+# the span) means the whole rank is complete, not just division 4.
+#
+# Deliberately computed from RANK_TABLE rather than hardcoded: the
+# spreadsheet's division hours are exactly this formula applied to the
+# existing thresholds, so deriving them keeps a single source of truth
+# and can't drift out of sync with RANK_TABLE.
+DIVISION_COUNT = 4
+_DIVISIONS_START_NAME = "Bronze 1"
+_DIVISIONS_START_INDEX = next(i for i, r in enumerate(RANK_TABLE) if r.name == _DIVISIONS_START_NAME)
+
+
+def _has_divisions(rank_index: int) -> bool:
+    """True for every rank from Bronze 1 up to (but not including) the
+    very last rank — the last rank (S) has no 'next' tier to divide
+    against, so it can't have divisions, matching the sheet's blank
+    Division II/III/IV cells for S."""
+    return _DIVISIONS_START_INDEX <= rank_index < len(RANK_TABLE) - 1
+
+
+def division_thresholds(rank_index: int) -> list[float] | None:
+    """
+    Return the DIVISION_COUNT division-start hours for the rank at
+    rank_index, evenly spaced between its own threshold and the next
+    rank's. Returns None for ranks that don't have divisions — anything
+    below Bronze 1, and the single top rank.
+    """
+    if not _has_divisions(rank_index):
+        return None
+    current = RANK_TABLE[rank_index]
+    nxt = RANK_TABLE[rank_index + 1]
+    span = nxt.threshold_hours - current.threshold_hours
+    return [current.threshold_hours + span * i / DIVISION_COUNT for i in range(DIVISION_COUNT)]
+
+
+def _division_display_name(rank_index: int, rank_name: str, hours: float) -> str:
+    """The name to show for hours currently in rank_index — the plain
+    rank name if it has no divisions, otherwise the name plus whichever
+    division threshold has most recently been crossed."""
+    thresholds = division_thresholds(rank_index)
+    if thresholds is None:
+        return rank_name
+
+    division_number = 1
+    for i, threshold in enumerate(thresholds):
+        if hours >= threshold:
+            division_number = i + 1
+
+    return f"{rank_name} Division {division_number}"
+
 
 @dataclass(frozen=True)
 class RankStatus:
@@ -66,6 +120,7 @@ class RankStatus:
     hours_into_current: float
     hours_to_next: float | None
     progress_fraction: float | None  # 0..1 within current tier; None if maxed out
+    display_name: str  # current.name, or "<rank> Division N" where divisions apply
 
 
 def get_rank_status(hours: float) -> RankStatus:
@@ -74,20 +129,26 @@ def get_rank_status(hours: float) -> RankStatus:
     (or None if already at the top tier), and progress toward the next
     rank. Hours exactly equal to a threshold count as having reached
     that rank (>=, not >).
+
+    hours_to_next and progress_fraction are always measured against the
+    full rank-to-rank span, never against a division boundary — a
+    division only changes display_name, not what "next rank" means or
+    how much is left to reach it.
     """
     if hours < 0:
         raise ValueError("hours must be >= 0")
 
-    current = RANK_TABLE[0]
+    current_index = 0
     next_rank: Rank | None = None
 
     for i, rank in enumerate(RANK_TABLE):
         if hours >= rank.threshold_hours:
-            current = rank
+            current_index = i
             next_rank = RANK_TABLE[i + 1] if i + 1 < len(RANK_TABLE) else None
         else:
             break
 
+    current = RANK_TABLE[current_index]
     hours_into_current = hours - current.threshold_hours
 
     if next_rank is None:
@@ -105,6 +166,7 @@ def get_rank_status(hours: float) -> RankStatus:
         hours_into_current=hours_into_current,
         hours_to_next=hours_to_next,
         progress_fraction=progress_fraction,
+        display_name=_division_display_name(current_index, current.name, hours),
     )
 
 

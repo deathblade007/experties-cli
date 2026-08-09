@@ -123,3 +123,27 @@ def test_commands_lists_every_command(tmp_path):
     assert result.exit_code == 0
     for name in ["list", "start", "log", "stats", "rank-table", "delete", "commands"]:
         assert name in result.output
+
+
+def test_list_shows_division_in_rank_name(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("log", "Coding", "--time", "78h", db_path=db_path)
+    result = _run("list", db_path=db_path)
+    assert "Bronze 1" in result.output
+    assert "Division 3" in result.output
+
+
+def test_stats_shows_division_in_rank_name(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("log", "Coding", "--time", "78h", db_path=db_path)
+    result = _run("stats", "Coding", db_path=db_path)
+    assert "Division 3" in result.output
+
+
+def test_list_progress_still_measures_full_rank_gap_not_division_gap(tmp_path):
+    # 78h is Bronze 1 Division 3, but the "Left" column must still count
+    # down to Bronze 2 (83h), not to Division 4 (80.5h).
+    db_path = tmp_path / "data.db"
+    _run("log", "Coding", "--time", "78h", db_path=db_path)
+    result = _run("list", db_path=db_path)
+    assert "5.0h" in result.output  # 83 - 78, not 80.5 - 78

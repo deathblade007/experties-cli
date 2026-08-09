@@ -29,7 +29,7 @@ app = typer.Typer(
 )
 console = Console()
 
-_BAR_WIDTH = 20
+_BAR_WIDTH = 12
 
 
 def _progress_bar(fraction: float | None) -> str:
@@ -40,15 +40,15 @@ def _progress_bar(fraction: float | None) -> str:
 
 
 def _rank_row(hours: float) -> tuple[str, str, str, str]:
-    """Return (rank_name, hours_display, progress_display, next_display)."""
+    """Return (rank_name, hours_display, progress_display, hours_left_display)."""
     status = get_rank_status(hours)
     if status.next is None:
-        return status.current.name, f"{hours:.1f}h", _progress_bar(None), "—"
+        return status.display_name, f"{hours:.1f}h", _progress_bar(None), "—"
 
     pct = int(round((status.progress_fraction or 0) * 100))
     progress = f"{_progress_bar(status.progress_fraction)} {pct}%"
-    next_display = f"{status.next.name} ({status.hours_to_next:.1f}h)"
-    return status.current.name, f"{hours:.1f}h", progress, next_display
+    hours_left_display = f"{status.hours_to_next:.1f}h"
+    return status.display_name, f"{hours:.1f}h", progress, hours_left_display
 
 
 @app.command("list")
@@ -70,15 +70,15 @@ def list_skills() -> None:
     table.add_column("Rank")
     table.add_column("Hours", justify="right")
     table.add_column("Progress")
-    table.add_column("Next")
+    table.add_column("Left", justify="right")
 
     for skill, hours in skills_with_hours:
-        rank_name, hours_display, progress, next_display = _rank_row(hours)
-        table.add_row(skill.name, rank_name, hours_display, progress, next_display)
+        rank_name, hours_display, progress, hours_left = _rank_row(hours)
+        table.add_row(skill.name, rank_name, hours_display, progress, hours_left)
 
     table.add_section()
-    rank_name, hours_display, progress, next_display = _rank_row(global_hours)
-    table.add_row("[bold]GLOBAL[/bold]", rank_name, hours_display, progress, next_display)
+    rank_name, hours_display, progress, hours_left = _rank_row(global_hours)
+    table.add_row("[bold]GLOBAL[/bold]", rank_name, hours_display, progress, hours_left)
 
     console.print(table)
 
@@ -98,7 +98,7 @@ def stats(
             raise typer.Exit(code=1)
 
     status = get_rank_status(hours)
-    console.print(f"\n[bold]{skill}[/bold] — {status.current.name} ({hours:.1f}h total)")
+    console.print(f"\n[bold]{skill}[/bold] — {status.display_name} ({hours:.1f}h total)")
     if status.next is not None:
         pct = int(round((status.progress_fraction or 0) * 100))
         console.print(
