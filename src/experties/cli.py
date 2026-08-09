@@ -9,7 +9,9 @@ lives elsewhere; this file is mostly formatting and command wiring.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -19,6 +21,7 @@ from rich.table import Table
 from experties.database import Database, SkillNotFoundError
 from experties.duration import parse_duration
 from experties.notifications import notify_all_level_ups
+from experties.plugins import DEFAULT_PLUGINS_DIR, load_plugins
 from experties.rank_engine import RANK_TABLE, crossed_rank_up, get_rank_status
 from experties.timer import run_timer
 
@@ -157,6 +160,7 @@ _COMMAND_REFERENCE: list[_CommandInfo] = [
     _CommandInfo("rank-table", "Show the full rank ladder and required hours per tier.", "experties rank-table"),
     _CommandInfo("delete", "Delete a single logged session by its id.", "experties delete 12"),
     _CommandInfo("commands", "Show this list.", "experties commands"),
+    _CommandInfo("plugins", "Show the plugins directory and which plugin files are loaded.", "experties plugins"),
 ]
 
 
@@ -256,6 +260,37 @@ def delete(
         db.delete_session(session_id)
 
     console.print(f"[green]Deleted session #{session_id}.[/green]")
+
+
+@app.command()
+def plugins() -> None:
+    """Show the plugins directory and which plugin files are currently loaded."""
+    console.print(f"Plugins directory: [bold]{_effective_plugins_dir}[/bold]")
+    if not _effective_plugins_dir.is_dir():
+        console.print(
+            "[dim]Doesn't exist yet — create it and drop a .py file in to add a command. "
+            "See PLUGINS.md for the format.[/dim]"
+        )
+        return
+
+    if not _loaded_plugins:
+        console.print("[dim]No plugins loaded.[/dim]")
+        return
+
+    console.print(f"Loaded ({len(_loaded_plugins)}):")
+    for name in _loaded_plugins:
+        console.print(f"  \u2022 {name}")
+
+
+# Loaded after every built-in command is registered, so a plugin can't
+# accidentally shadow a built-in one without at least a warning from
+# Typer/Click's own duplicate-command handling. Respects
+# EXPERTIES_PLUGINS_DIR the same way database.py respects
+# EXPERTIES_DB_PATH — mainly so the test suite never loads whatever
+# real plugins happen to be installed on the machine running it.
+_plugins_dir_override = os.environ.get("EXPERTIES_PLUGINS_DIR")
+_effective_plugins_dir = Path(_plugins_dir_override) if _plugins_dir_override else DEFAULT_PLUGINS_DIR
+_loaded_plugins = load_plugins(app, plugins_dir=_effective_plugins_dir)
 
 
 if __name__ == "__main__":

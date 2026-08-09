@@ -19,6 +19,7 @@ it's the only place that will show plugin-added commands too.
 | `experties rank-table` | Show the full rank ladder |
 | `experties delete <id>` | Delete a single logged session |
 | `experties commands` | Quick in-terminal command summary |
+| `experties plugins` | Show loaded plugins |
 
 ---
 
@@ -143,4 +144,16 @@ file. It does not include any plugin-added commands; use
 
 ```bash
 experties commands
+```
+
+---
+
+## `experties plugins`
+
+Shows where your plugins directory is, and which `.py` files in it
+loaded successfully as commands. See [PLUGINS.md](PLUGINS.md) for how
+to write one.
+
+```bash
+experties plugins
 ```

@@ -34,5 +34,9 @@ experties stats Coding
 See [COMMANDS.md](COMMANDS.md) for the full command reference, or run
 `experties commands` for a quick in-terminal summary.
 
+Want to add your own commands? See [PLUGINS.md](PLUGINS.md) — drop a
+`.py` file in `~/.experties/plugins/` and it becomes a real subcommand,
+no reinstalling.
+
 Data lives locally in `~/.experties/data.db` (override with the
 `EXPERTIES_DB_PATH` environment variable).

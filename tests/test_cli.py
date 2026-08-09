@@ -147,3 +147,16 @@ def test_list_progress_still_measures_full_rank_gap_not_division_gap(tmp_path):
     _run("log", "Coding", "--time", "78h", db_path=db_path)
     result = _run("list", db_path=db_path)
     assert "5.0h" in result.output  # 83 - 78, not 80.5 - 78
+
+
+def test_plugins_command_reports_no_plugins_when_dir_missing(tmp_path):
+    db_path = tmp_path / "data.db"
+    result = _run("plugins", db_path=db_path)
+    assert result.exit_code == 0
+    assert "No plugins loaded" in result.output or "Doesn't exist yet" in result.output
+
+
+def test_commands_reference_includes_plugins(tmp_path):
+    db_path = tmp_path / "data.db"
+    result = _run("commands", db_path=db_path)
+    assert "plugins" in result.output
