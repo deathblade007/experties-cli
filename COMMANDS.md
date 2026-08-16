@@ -20,6 +20,11 @@ it's the only place that will show plugin-added commands too.
 | `experties delete <id>` | Delete a single logged session |
 | `experties skill rename <old> <new>` | Rename a skill (keeps its history) |
 | `experties skill delete <skill>` | Delete a skill and all its sessions |
+| `experties group create <name>` | Create a group ("super skill") |
+| `experties group add <group> <skill>` | Add a skill as a member of a group |
+| `experties group remove <skill>` | Remove a skill from its group |
+| `experties group list` | Show every group, hours, and members |
+| `experties cd <group>` | Focus `list` on one group, like cd into a folder |
 | `experties commands` | Quick in-terminal command summary |
 | `experties plugins` | Show loaded plugins |
 
@@ -165,6 +170,70 @@ experties skill delete Guitar --yes   # skip the confirmation prompt
 
 It shows the skill's total hours and session count before asking you to
 confirm.
+
+---
+
+## Groups — "super skills"
+
+A group is a skill that other skills can belong to. Its hours are the
+sum of its own direct sessions (if any) plus every member's hours —
+automatically, everywhere: `list`, `stats`, and its rank all reflect
+the rolled-up total with no extra steps.
+
+```bash
+experties group create "Machine Learning"
+experties group add "Machine Learning" Python
+experties group add "Machine Learning" Maths
+experties log Python --time 3h
+experties log Maths --time 2h
+experties list   # "Machine Learning" shows 5h total
+```
+
+A skill belongs to at most one group. Groups can't be nested (a group's
+members must be regular skills, not other groups). `experties delete
+<skill>`/`log`/`start`/`stats` all still work on a group's individual
+members exactly as before — grouping only changes how the *group's own*
+total is calculated and how `list` displays things; it never merges the
+members' identities together. Deleting a group (`experties skill
+delete`) does not delete its members, just ungroups them.
+
+### `experties group create <name>`
+Creates a new, empty group.
+
+### `experties group add <group> <skill>`
+Adds a skill to a group. The skill is created automatically if it
+doesn't exist yet. A skill already in a different group must be
+removed from that one first (`experties group remove`).
+
+### `experties group remove <skill>`
+Removes a skill from its group. The skill and its history are
+untouched — only the grouping is undone.
+
+### `experties group list`
+Shows every group: rolled-up hours, rank, and its members.
+
+---
+
+## `experties cd <group>`
+
+Focuses `experties list` on one group's members — like `cd` into a
+folder. Run with no argument (or `experties cd ..`) to go back to
+showing everything.
+
+```bash
+experties cd "Machine Learning"
+experties list      # now shows Python and Maths individually
+experties cd
+experties list      # back to showing "Machine Learning" rolled up
+```
+
+This only changes what `list` *displays*. `log`, `start`, `stats`, and
+`delete` always take an exact skill name and work identically whether
+or not you're "inside" a group — skill names are globally unique, so
+there's never any ambiguity about which skill a command means.
+
+If the group you `cd`'d into gets renamed or deleted, `list` notices
+and quietly falls back to the top level rather than getting stuck.
 
 ---
 

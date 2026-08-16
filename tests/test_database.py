@@ -209,3 +209,201 @@ def test_delete_skill_does_not_affect_other_skills(db):
     db.delete_skill("Coding")
     assert db.get_skill("Guitar") is not None
     assert db.get_total_hours("Guitar") == 4.0
+
+
+# -- groups -------------------------------------------------------------
+
+def test_create_group_marks_it_as_a_group(db):
+    group = db.create_group("Machine Learning")
+    assert group.is_group is True
+
+
+def test_create_group_rejects_duplicate_name(db):
+    db.create_group("Machine Learning")
+    with pytest.raises(SkillAlreadyExistsError):
+        db.create_group("Machine Learning")
+
+
+def test_create_group_rejects_empty_name(db):
+    with pytest.raises(ValueError):
+        db.create_group("   ")
+
+
+def test_add_to_group_auto_creates_the_member_skill(db):
+    db.create_group("Machine Learning")
+    member = db.add_to_group("Machine Learning", "Python")
+    assert member.name == "Python"
+    assert db.get_skill("Python") is not None
+
+
+def test_add_to_group_rejects_unknown_group(db):
+    with pytest.raises(SkillNotFoundError):
+        db.add_to_group("Not A Group", "Python")
+
+
+def test_add_to_group_rejects_non_group_skill_as_target(db):
+    db.add_skill("Coding")  # a regular skill, not a group
+    with pytest.raises(SkillNotFoundError):
+        db.add_to_group("Coding", "Python")
+
+
+def test_add_to_group_rejects_nesting_a_group(db):
+    db.create_group("Machine Learning")
+    db.create_group("Programming")
+    with pytest.raises(ValueError):
+        db.add_to_group("Machine Learning", "Programming")
+
+
+def test_add_to_group_rejects_group_containing_itself(db):
+    db.create_group("Machine Learning")
+    with pytest.raises(ValueError):
+        db.add_to_group("Machine Learning", "Machine Learning")
+
+
+def test_add_to_group_rejects_skill_already_in_a_different_group(db):
+    db.create_group("Machine Learning")
+    db.create_group("Web Dev")
+    db.add_to_group("Machine Learning", "Python")
+    with pytest.raises(ValueError):
+        db.add_to_group("Web Dev", "Python")
+
+
+def test_add_to_group_is_idempotent_for_the_same_group(db):
+    db.create_group("Machine Learning")
+    db.add_to_group("Machine Learning", "Python")
+    db.add_to_group("Machine Learning", "Python")  # should not raise
+    assert len(db.get_group_members("Machine Learning")) == 1
+
+
+def test_remove_from_group_ungroups_but_keeps_the_skill(db):
+    db.create_group("Machine Learning")
+    db.add_to_group("Machine Learning", "Python")
+    assert db.remove_from_group("Python") is True
+    assert db.get_skill("Python") is not None
+    assert db.get_group_of("Python") is None
+
+
+def test_remove_from_group_returns_false_if_not_in_a_group(db):
+    db.add_skill("Python")
+    assert db.remove_from_group("Python") is False
+
+
+def test_remove_from_group_raises_for_unknown_skill(db):
+    with pytest.raises(SkillNotFoundError):
+        db.remove_from_group("Nope")
+
+
+def test_get_group_members_lists_them_in_name_order(db):
+    db.create_group("Machine Learning")
+    db.add_to_group("Machine Learning", "Python")
+    db.add_to_group("Machine Learning", "Maths")
+    names = [s.name for s in db.get_group_members("Machine Learning")]
+    assert names == ["Maths", "Python"]
+
+
+def test_get_group_of_returns_the_parent(db):
+    db.create_group("Machine Learning")
+    db.add_to_group("Machine Learning", "Python")
+    parent = db.get_group_of("Python")
+    assert parent is not None
+    assert parent.name == "Machine Learning"
+
+
+def test_get_group_of_returns_none_for_ungrouped_skill(db):
+    db.add_skill("Coding")
+    assert db.get_group_of("Coding") is None
+
+
+def test_list_groups_returns_only_groups(db):
+    db.create_group("Machine Learning")
+    db.add_skill("Coding")
+    names = [s.name for s in db.list_groups()]
+    assert names == ["Machine Learning"]
+
+
+def test_get_ungrouped_skills_excludes_groups_and_members(db):
+    db.create_group("Machine Learning")
+    db.add_to_group("Machine Learning", "Python")
+    db.add_skill("Guitar")  # ungrouped
+    names = [s.name for s in db.get_ungrouped_skills()]
+    assert names == ["Guitar"]
+
+
+def test_group_total_hours_rolls_up_its_members(db):
+    # The exact scenario: Python and Maths logged separately, Machine
+    # Learning's total should be the sum of both.
+    db.create_group("Machine Learning")
+    db.add_to_group("Machine Learning", "Python")
+    db.add_to_group("Machine Learning", "Maths")
+    db.log_session("Python", 3.0)
+    db.log_session("Maths", 2.0)
+    assert db.get_total_hours("Machine Learning") == 5.0
+    # Each member's own total is untouched — rollup is additive, not shared.
+    assert db.get_total_hours("Python") == 3.0
+    assert db.get_total_hours("Maths") == 2.0
+
+
+def test_group_total_hours_also_includes_its_own_direct_sessions(db):
+    db.create_group("Machine Learning")
+    db.add_to_group("Machine Learning", "Python")
+    db.log_session("Python", 3.0)
+    db.log_session("Machine Learning", 1.0)  # general ML reading, not Python-specific
+    assert db.get_total_hours("Machine Learning") == 4.0
+
+
+def test_group_sessions_merge_own_and_members_sorted_by_recency(db):
+    db.create_group("Machine Learning")
+    db.add_to_group("Machine Learning", "Python")
+    db.add_to_group("Machine Learning", "Maths")
+    db.log_session("Python", 1.0, note="python session")
+    db.log_session("Maths", 1.0, note="maths session")
+    db.log_session("Machine Learning", 1.0, note="direct ml session")
+
+    sessions = db.get_sessions("Machine Learning")
+    assert len(sessions) == 3
+    assert [s.note for s in sessions] == ["direct ml session", "maths session", "python session"]
+
+
+def test_global_total_is_not_double_counted_by_grouping(db):
+    # This is the property that matters most: grouping must never
+    # inflate the app-wide total, since it's computed from raw session
+    # data, not by summing each skill's (possibly rolled-up) total.
+    db.create_group("Machine Learning")
+    db.add_to_group("Machine Learning", "Python")
+    db.log_session("Python", 3.0)
+    db.log_session("Guitar", 2.0)
+    assert db.get_global_total_hours() == 5.0
+
+
+def test_get_top_level_skills_with_hours_shows_groups_not_members(db):
+    db.create_group("Machine Learning")
+    db.add_to_group("Machine Learning", "Python")
+    db.add_to_group("Machine Learning", "Maths")
+    db.log_session("Python", 3.0)
+    db.log_session("Maths", 2.0)
+    db.add_skill("Guitar")
+    db.log_session("Guitar", 1.0)
+
+    top_level = db.get_top_level_skills_with_hours()
+    names_and_hours = {s.name: h for s, h in top_level}
+
+    assert names_and_hours == {"Machine Learning": 5.0, "Guitar": 1.0}
+    assert "Python" not in names_and_hours
+    assert "Maths" not in names_and_hours
+
+
+def test_delete_group_does_not_delete_its_members(db):
+    db.create_group("Machine Learning")
+    db.add_to_group("Machine Learning", "Python")
+    db.log_session("Python", 3.0)
+    db.delete_skill("Machine Learning")
+    assert db.get_skill("Python") is not None
+    assert db.get_total_hours("Python") == 3.0
+    assert db.get_group_of("Python") is None  # membership row cascaded away with the group
+
+
+def test_rename_skill_preserves_is_group(db):
+    db.create_group("Machine Learning")
+    renamed = db.rename_skill("Machine Learning", "ML")
+    assert renamed.is_group is True
+    assert db.get_skill("ML").is_group is True

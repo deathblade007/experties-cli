@@ -216,3 +216,179 @@ def test_skill_delete_without_yes_can_be_declined(tmp_path):
 
     with Database(db_path) as db:
         assert db.get_skill("Coding") is not None
+
+
+# -- groups ---------------------------------------------------------------
+
+def test_group_create_success(tmp_path):
+    db_path = tmp_path / "data.db"
+    result = _run("group", "create", "Machine Learning", db_path=db_path)
+    assert result.exit_code == 0
+    assert "Created group" in result.output
+
+
+def test_group_create_duplicate_name_errors(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    result = _run("group", "create", "Machine Learning", db_path=db_path)
+    assert result.exit_code == 1
+    assert "already exists" in result.output
+
+
+def test_group_add_auto_creates_the_member_and_rolls_up_hours(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    _run("group", "add", "Machine Learning", "Python", db_path=db_path)
+    _run("group", "add", "Machine Learning", "Maths", db_path=db_path)
+    _run("log", "Python", "--time", "3h", db_path=db_path)
+    _run("log", "Maths", "--time", "2h", db_path=db_path)
+
+    with Database(db_path) as db:
+        assert db.get_total_hours("Machine Learning") == 5.0
+
+
+def test_group_add_to_unknown_group_errors(tmp_path):
+    db_path = tmp_path / "data.db"
+    result = _run("group", "add", "Not A Group", "Python", db_path=db_path)
+    assert result.exit_code == 1
+    assert "not a group" in result.output
+
+
+def test_group_add_rejects_nested_group(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    _run("group", "create", "Programming", db_path=db_path)
+    result = _run("group", "add", "Machine Learning", "Programming", db_path=db_path)
+    assert result.exit_code == 1
+
+
+def test_group_remove_ungroups_the_skill(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    _run("group", "add", "Machine Learning", "Python", db_path=db_path)
+    result = _run("group", "remove", "Python", db_path=db_path)
+    assert result.exit_code == 0
+    assert "Removed" in result.output
+
+    with Database(db_path) as db:
+        assert db.get_group_of("Python") is None
+        assert db.get_skill("Python") is not None
+
+
+def test_group_remove_reports_when_not_in_a_group(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("log", "Python", "--time", "1h", db_path=db_path)
+    result = _run("group", "remove", "Python", db_path=db_path)
+    assert "wasn't in a group" in result.output
+
+
+def test_group_list_shows_groups_and_members(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    _run("group", "add", "Machine Learning", "Python", db_path=db_path)
+    result = _run("group", "list", db_path=db_path)
+    assert "Machine Learning" in result.output
+    assert "Python" in result.output
+
+
+def test_group_list_with_no_groups_shows_hint(tmp_path):
+    db_path = tmp_path / "data.db"
+    result = _run("group", "list", db_path=db_path)
+    assert "No groups yet" in result.output
+
+
+# -- cd and list group-awareness -------------------------------------------
+
+def test_cd_into_a_group_succeeds(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    result = _run("cd", "Machine Learning", db_path=db_path)
+    assert result.exit_code == 0
+    assert "Now focused" in result.output
+
+
+def test_cd_into_non_group_errors(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("log", "Python", "--time", "1h", db_path=db_path)
+    result = _run("cd", "Python", db_path=db_path)
+    assert result.exit_code == 1
+    assert "not a group" in result.output
+
+
+def test_cd_with_no_args_goes_back_to_top_level(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    _run("cd", "Machine Learning", db_path=db_path)
+    result = _run("cd", db_path=db_path)
+    assert "top level" in result.output
+
+
+def test_list_at_top_level_shows_group_rolled_up_not_members(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    _run("group", "add", "Machine Learning", "Python", db_path=db_path)
+    _run("group", "add", "Machine Learning", "Maths", db_path=db_path)
+    _run("log", "Python", "--time", "3h", db_path=db_path)
+    _run("log", "Maths", "--time", "2h", db_path=db_path)
+    _run("log", "Guitar", "--time", "1h", db_path=db_path)
+
+    result = _run("list", db_path=db_path)
+    assert "Machine Learning" in result.output
+    assert "Guitar" in result.output
+    assert "Python" not in result.output
+    assert "Maths" not in result.output
+    assert "5.0h" in result.output  # rolled-up total
+
+
+def test_list_after_cd_shows_group_members(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    _run("group", "add", "Machine Learning", "Python", db_path=db_path)
+    _run("group", "add", "Machine Learning", "Maths", db_path=db_path)
+    _run("cd", "Machine Learning", db_path=db_path)
+
+    result = _run("list", db_path=db_path)
+    assert "Python" in result.output
+    assert "Maths" in result.output
+    assert "Inside group" in result.output
+
+
+def test_list_falls_back_gracefully_if_cd_group_was_deleted(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    _run("cd", "Machine Learning", db_path=db_path)
+    _run("skill", "delete", "Machine Learning", "--yes", db_path=db_path)
+
+    result = _run("list", db_path=db_path)
+    assert result.exit_code == 0  # must not crash
+
+
+def test_global_total_not_inflated_by_grouping_through_the_real_cli(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    _run("group", "add", "Machine Learning", "Python", db_path=db_path)
+    _run("log", "Python", "--time", "3h", db_path=db_path)
+    _run("log", "Guitar", "--time", "2h", db_path=db_path)
+
+    with Database(db_path) as db:
+        assert db.get_global_total_hours() == 5.0
+
+
+def test_stats_on_group_shows_skill_column(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    _run("group", "add", "Machine Learning", "Python", db_path=db_path)
+    _run("log", "Python", "--time", "3h", "--note", "numpy", db_path=db_path)
+
+    result = _run("stats", "Machine Learning", db_path=db_path)
+    assert "Skill" in result.output
+    assert "Python" in result.output
+    assert "numpy" in result.output
+
+
+def test_stats_on_regular_skill_has_no_skill_column(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("log", "Python", "--time", "1h", db_path=db_path)
+    result = _run("stats", "Python", db_path=db_path)
+    # The header row shouldn't contain a standalone "Skill" column label.
+    assert "┃ Skill" not in result.output
