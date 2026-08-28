@@ -1,9 +1,3 @@
-"""
-End-to-end CLI tests, run through Typer's CliRunner against the real
-commands. Each test points EXPERTIES_DB_PATH at a pytest tmp_path so
-nothing ever touches the real ~/.experties data.
-"""
-
 import os
 
 from typer.testing import CliRunner
@@ -141,12 +135,10 @@ def test_stats_shows_division_in_rank_name(tmp_path):
 
 
 def test_list_progress_still_measures_full_rank_gap_not_division_gap(tmp_path):
-    # 78h is Bronze 1 Division 3, but the "Left" column must still count
-    # down to Bronze 2 (83h), not to Division 4 (80.5h).
     db_path = tmp_path / "data.db"
     _run("log", "Coding", "--time", "78h", db_path=db_path)
     result = _run("list", db_path=db_path)
-    assert "5.0h" in result.output  # 83 - 78, not 80.5 - 78
+    assert "5.0h" in result.output
 
 
 def test_plugins_command_reports_no_plugins_when_dir_missing(tmp_path):
@@ -297,6 +289,57 @@ def test_group_list_with_no_groups_shows_hint(tmp_path):
     assert "No groups yet" in result.output
 
 
+def test_group_rename_success(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    _run("group", "add", "Machine Learning", "Python", db_path=db_path)
+    _run("log", "Python", "--time", "3h", db_path=db_path)
+
+    result = _run("group", "rename", "Machine Learning", "ML", db_path=db_path)
+    assert result.exit_code == 0
+    assert "Renamed group" in result.output
+
+    with Database(db_path) as db:
+        assert db.get_skill("Machine Learning") is None
+        renamed = db.get_skill("ML")
+        assert renamed is not None
+        assert renamed.is_group is True
+        assert db.get_total_hours("ML") == 3.0  # rollup survives the rename
+
+
+def test_group_rename_rejects_non_group_target(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("log", "Coding", "--time", "1h", db_path=db_path)
+    result = _run("group", "rename", "Coding", "Programming", db_path=db_path)
+    assert result.exit_code == 1
+    assert "not a group" in result.output
+
+
+def test_group_rename_unknown_group_errors(tmp_path):
+    db_path = tmp_path / "data.db"
+    result = _run("group", "rename", "Nope", "Something", db_path=db_path)
+    assert result.exit_code == 1
+    assert "not a group" in result.output
+
+
+def test_group_rename_to_existing_name_errors(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    _run("log", "Guitar", "--time", "1h", db_path=db_path)
+    result = _run("group", "rename", "Machine Learning", "Guitar", db_path=db_path)
+    assert result.exit_code == 1
+    assert "already exists" in result.output
+
+
+def test_group_rename_shows_up_in_group_list_afterward(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    _run("group", "rename", "Machine Learning", "ML", db_path=db_path)
+    result = _run("group", "list", db_path=db_path)
+    assert "ML" in result.output
+    assert "Machine Learning" not in result.output
+
+
 # -- cd and list group-awareness -------------------------------------------
 
 def test_cd_into_a_group_succeeds(tmp_path):
@@ -337,7 +380,7 @@ def test_list_at_top_level_shows_group_rolled_up_not_members(tmp_path):
     assert "Guitar" in result.output
     assert "Python" not in result.output
     assert "Maths" not in result.output
-    assert "5.0h" in result.output  # rolled-up total
+    assert "5.0h" in result.output
 
 
 def test_list_after_cd_shows_group_members(tmp_path):
@@ -360,7 +403,7 @@ def test_list_falls_back_gracefully_if_cd_group_was_deleted(tmp_path):
     _run("skill", "delete", "Machine Learning", "--yes", db_path=db_path)
 
     result = _run("list", db_path=db_path)
-    assert result.exit_code == 0  # must not crash
+    assert result.exit_code == 0
 
 
 def test_global_total_not_inflated_by_grouping_through_the_real_cli(tmp_path):
@@ -390,5 +433,4 @@ def test_stats_on_regular_skill_has_no_skill_column(tmp_path):
     db_path = tmp_path / "data.db"
     _run("log", "Python", "--time", "1h", db_path=db_path)
     result = _run("stats", "Python", db_path=db_path)
-    # The header row shouldn't contain a standalone "Skill" column label.
     assert "┃ Skill" not in result.output

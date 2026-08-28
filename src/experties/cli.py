@@ -1,10 +1,5 @@
 """
 Command-line interface for Experties-CLI.
-
-This wires the pure logic (rank_engine, duration, timer) and the storage
-layer (database) into the actual `experties` commands. Kept as thin as
-reasonably possible — anything that can be unit tested without a terminal
-lives elsewhere; this file is mostly formatting and command wiring.
 """
 
 from __future__ import annotations
@@ -36,9 +31,6 @@ _BAR_WIDTH = 12
 
 
 def _current_group_file() -> Path:
-    # Lives next to whatever database is currently in use, so it
-    # automatically gets the same test isolation EXPERTIES_DB_PATH
-    # already gives the database itself — no separate env var needed.
     return resolve_db_path().parent / "current_group"
 
 
@@ -63,7 +55,7 @@ def _progress_bar(fraction: float | None) -> str:
     if fraction is None:
         return "[bold gold1]MAXED[/bold gold1]"
     filled = round(fraction * _BAR_WIDTH)
-    return "█" * filled + "░" * (_BAR_WIDTH - filled)
+    return "\u2588" * filled + "\u2591" * (_BAR_WIDTH - filled)
 
 
 def _rank_row(hours: float) -> tuple[str, str, str, str]:
@@ -86,9 +78,6 @@ def list_skills() -> None:
     with Database() as db:
         group = db.get_skill(current_group_name) if current_group_name else None
         if current_group_name and (group is None or not group.is_group):
-            # The group was renamed or deleted since `cd` — don't get
-            # stuck showing a stale focus silently; drop back to the
-            # top level and say so.
             _set_current_group(None)
             current_group_name = None
             group = None
@@ -258,6 +247,7 @@ _COMMAND_REFERENCE: list[_CommandInfo] = [
     _CommandInfo("group create", "Create a new group.", "experties group create \"Machine Learning\""),
     _CommandInfo("group add", "Add a skill as a member of a group.", "experties group add \"Machine Learning\" Python"),
     _CommandInfo("group remove", "Remove a skill from its group.", "experties group remove Python"),
+    _CommandInfo("group rename", "Rename a group (members and history move with it).", "experties group rename \"Machine Learning\" ML"),
     _CommandInfo("group list", "Show every group, its hours, and its members.", "experties group list"),
     _CommandInfo("cd", "Focus `list` on one group, like cd into a folder.", "experties cd \"Machine Learning\""),
     _CommandInfo("commands", "Show this list.", "experties commands"),
@@ -464,6 +454,29 @@ def group_remove(skill: str = typer.Argument(..., help="Skill to remove from its
         console.print(f'[yellow]"{skill}" wasn\'t in a group.[/yellow]')
 
 
+@group_app.command("rename")
+def group_rename(
+    old_name: str = typer.Argument(..., help="Current group name"),
+    new_name: str = typer.Argument(..., help="New group name"),
+) -> None:
+    """Rename a group. Its members and rolled-up history move with it — this is `experties skill rename`, guarded so it only accepts an actual group."""
+    with Database() as db:
+        skill = db.get_skill(old_name)
+        if skill is None or not skill.is_group:
+            console.print(
+                f'[red]"{old_name}" is not a group.[/red] Run [bold]experties group list[/bold] to see what exists.'
+            )
+            raise typer.Exit(code=1)
+
+        try:
+            renamed = db.rename_skill(old_name, new_name)
+        except SkillAlreadyExistsError:
+            console.print(f'[red]A skill named "{new_name}" already exists.[/red]')
+            raise typer.Exit(code=1)
+
+    console.print(f'[green]Renamed group "{old_name}" to "{renamed.name}".[/green]')
+
+
 @group_app.command("list")
 def group_list() -> None:
     """Show every group, its rolled-up hours, and its members — like `ls` at the top level."""
@@ -514,12 +527,6 @@ def plugins() -> None:
         console.print(f"  \u2022 {name}")
 
 
-# Loaded after every built-in command is registered, so a plugin can't
-# accidentally shadow a built-in one without at least a warning from
-# Typer/Click's own duplicate-command handling. Respects
-# EXPERTIES_PLUGINS_DIR the same way database.py respects
-# EXPERTIES_DB_PATH — mainly so the test suite never loads whatever
-# real plugins happen to be installed on the machine running it.
 _plugins_dir_override = os.environ.get("EXPERTIES_PLUGINS_DIR")
 _effective_plugins_dir = Path(_plugins_dir_override) if _plugins_dir_override else DEFAULT_PLUGINS_DIR
 _loaded_plugins = load_plugins(app, plugins_dir=_effective_plugins_dir)

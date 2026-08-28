@@ -4,18 +4,6 @@ Local SQLite storage for Experties-CLI.
 Every skill and every logged session lives in a single SQLite file at
 ~/.experties/data.db by default. There's no server and no network calls —
 this module is the entire persistence layer.
-
-A "session" here always means a committed, already-finished chunk of time
-(hours > 0) attached to a skill. Both the live timer (timer.py) and manual
-logging (`experties log`) go through the same log_session() call — the
-schema doesn't care whether the hours came from a stopwatch or were typed
-in by hand.
-
-The Database class holds a single open connection for its lifetime rather
-than reconnecting per call. This isn't just an optimization: it's required
-for ":memory:" databases to work at all (each fresh connection to
-":memory:" otherwise gets its own empty database), and it's what lets
-tests use Database(":memory:") cleanly.
 """
 
 from __future__ import annotations
@@ -61,10 +49,6 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_skill_id ON sessions(skill_id);
 
--- A skill belongs to at most one group, enforced by child_skill_id
--- being the primary key (not just unique) — one row per possible child.
--- No nesting: a group's members are always regular skills, checked in
--- application code (add_to_group), not by the schema itself.
 CREATE TABLE IF NOT EXISTS skill_groups (
     child_skill_id  INTEGER PRIMARY KEY REFERENCES skills(id) ON DELETE CASCADE,
     parent_skill_id INTEGER NOT NULL REFERENCES skills(id) ON DELETE CASCADE
@@ -105,9 +89,6 @@ class SkillNotFoundError(Exception):
 class Database:
     def __init__(self, db_path: str | Path | None = None):
         if db_path is None:
-            # Lets the CLI and tests point at a different file (or an
-            # in-memory DB) without changing any calling code — set
-            # EXPERTIES_DB_PATH before invoking `experties`.
             db_path = resolve_db_path()
 
         if str(db_path) == ":memory:":
@@ -138,16 +119,6 @@ class Database:
         self._conn.commit()
 
     def _migrate_add_is_group_column(self) -> None:
-        """
-        Existing databases created before groups existed have a `skills`
-        table with no `is_group` column — CREATE TABLE IF NOT EXISTS in
-        _SCHEMA is a no-op against a table that already exists, so it
-        can't retroactively add a column on its own. This runs on every
-        startup, checks whether the column is actually there via SQLite's
-        own introspection, and adds it exactly once if not. Safe to run
-        against a brand-new database too — is_group will already exist
-        from _SCHEMA, so this becomes a no-op in that case.
-        """
         columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(skills)")}
         if "is_group" not in columns:
             self._conn.execute("ALTER TABLE skills ADD COLUMN is_group INTEGER NOT NULL DEFAULT 0")
@@ -171,13 +142,6 @@ class Database:
         return Skill(id=cur.lastrowid, name=name, created_at=created_at)
 
     def create_group(self, name: str) -> Skill:
-        """
-        Create a new skill marked as a group — a "super skill" whose
-        total hours (via get_total_hours) automatically include every
-        member added with add_to_group, on top of any hours logged
-        directly to the group itself. Raises SkillAlreadyExistsError if
-        a skill with this name already exists, group or not.
-        """
         name = name.strip()
         if not name:
             raise ValueError("group name cannot be empty")
@@ -215,15 +179,12 @@ class Database:
         return [_row_to_skill(r) for r in rows]
 
     def list_groups(self) -> list[Skill]:
-        """Every skill marked as a group, name order."""
         rows = self._conn.execute(
             "SELECT * FROM skills WHERE is_group = 1 ORDER BY name COLLATE NOCASE"
         ).fetchall()
         return [_row_to_skill(r) for r in rows]
 
     def get_ungrouped_skills(self) -> list[Skill]:
-        """Skills that are neither a group nor a member of one — the
-        top-level `experties list` view shows these plus every group."""
         rows = self._conn.execute(
             """SELECT skills.* FROM skills
                WHERE skills.is_group = 0
@@ -233,24 +194,11 @@ class Database:
         return [_row_to_skill(r) for r in rows]
 
     def get_top_level_skills_with_hours(self) -> list[tuple[Skill, float]]:
-        """Every group (with its rolled-up total) plus every ungrouped
-        skill — what `experties list` shows when no group is currently
-        focused via `experties cd`."""
         top_level = self.list_groups() + self.get_ungrouped_skills()
         top_level.sort(key=lambda s: s.name.lower())
         return [(skill, self.get_total_hours(skill.name)) for skill in top_level]
 
     def add_to_group(self, group_name: str, skill_name: str) -> Skill:
-        """
-        Add skill_name as a member of group_name. skill_name is
-        auto-created if it doesn't exist yet, same convenience as
-        log_session. Returns the member skill.
-
-        Raises SkillNotFoundError if group_name doesn't exist or isn't
-        actually a group. Raises ValueError if skill_name is itself a
-        group (no nesting), is the group itself, or already belongs to
-        a different group — remove it from that one first.
-        """
         group = self.get_skill(group_name)
         if group is None or not group.is_group:
             raise SkillNotFoundError(
@@ -275,9 +223,6 @@ class Database:
         return skill
 
     def remove_from_group(self, skill_name: str) -> bool:
-        """Remove skill_name from whatever group it belongs to — the
-        skill itself is untouched, only ungrouped. Returns True if it
-        was in a group, False if it wasn't (not an error either way)."""
         skill = self.get_skill(skill_name)
         if skill is None:
             raise SkillNotFoundError(f'Skill "{skill_name}" does not exist')
@@ -286,7 +231,6 @@ class Database:
         return cur.rowcount > 0
 
     def get_group_members(self, group_name: str) -> list[Skill]:
-        """Skills belonging to a group, name order."""
         group = self.get_skill(group_name)
         if group is None:
             raise SkillNotFoundError(f'Skill "{group_name}" does not exist')
@@ -300,8 +244,6 @@ class Database:
         return [_row_to_skill(r) for r in rows]
 
     def get_group_of(self, skill_name: str) -> Skill | None:
-        """The group a skill belongs to, or None if it's ungrouped (or
-        doesn't exist — that's not this method's job to check)."""
         skill = self.get_skill(skill_name)
         if skill is None:
             return None
@@ -314,14 +256,6 @@ class Database:
         return _row_to_skill(row) if row else None
 
     def rename_skill(self, old_name: str, new_name: str) -> Skill:
-        """
-        Rename a skill in place — its id and all its sessions are
-        unaffected, so its full history moves with the new name.
-
-        Renaming to the same name with different casing (e.g. "coding"
-        -> "Coding") is allowed. Renaming to a name already used by a
-        DIFFERENT skill raises SkillAlreadyExistsError, same as add_skill.
-        """
         old_name = old_name.strip()
         new_name = new_name.strip()
         if not new_name:
@@ -340,17 +274,6 @@ class Database:
         return Skill(id=skill.id, name=new_name, created_at=skill.created_at, is_group=skill.is_group)
 
     def delete_skill(self, name: str) -> bool:
-        """
-        Delete a skill and every session logged against it. Returns True
-        if the skill existed and was removed, False if there was no such
-        skill.
-
-        This is the one place ON DELETE CASCADE (set up in the schema,
-        enforced via PRAGMA foreign_keys = ON in __init__) actually
-        matters — unlike delete_session(), which only ever removes one
-        session and never touches the skill it belongs to, this takes
-        the skill's entire history with it. There's no undo.
-        """
         skill = self.get_skill(name)
         if skill is None:
             return False
@@ -400,10 +323,6 @@ class Database:
         if skill is None:
             raise SkillNotFoundError(f'Skill "{skill_name}" does not exist')
 
-        # Ordered by id (not logged_at) so insertion order stays unambiguous
-        # even when two sessions are logged within the same second. For a
-        # group, this merges its own direct sessions with every member's
-        # sessions, interleaved by recency — not just the group's own.
         if skill.is_group:
             query = """SELECT * FROM sessions
                        WHERE skill_id = ?
@@ -421,6 +340,23 @@ class Database:
         rows = self._conn.execute(query, params).fetchall()
         return [_row_to_session(r) for r in rows]
 
+    def get_all_sessions(self) -> list[Session]:
+        """
+        Every session in the database, exactly once each, regardless of
+        which skill (or group) it belongs to — the raw ground truth,
+        with no group rollup applied. get_global_total_hours() is built
+        on exactly this same idea internally.
+
+        This is the right building block for anything (built-in or
+        plugin) that needs to look at activity across the whole app —
+        e.g. "everything logged today" — without double-counting a
+        group member's hours once under its own name and again under
+        its group, which is what get_sessions() would do if called
+        per-skill across every skill including groups.
+        """
+        rows = self._conn.execute("SELECT * FROM sessions ORDER BY id DESC").fetchall()
+        return [_row_to_session(r) for r in rows]
+
     def get_session_by_id(self, session_id: int) -> Session | None:
         row = self._conn.execute(
             "SELECT * FROM sessions WHERE id = ?", (session_id,)
@@ -428,10 +364,6 @@ class Database:
         return _row_to_session(row) if row else None
 
     def delete_session(self, session_id: int) -> bool:
-        """Delete one session by id. Returns True if a row was removed,
-        False if no session with that id existed. Deleting a session never
-        deletes the skill itself, even if it was the skill's only session —
-        the skill just goes back to however many hours are left (possibly 0)."""
         cur = self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         self._conn.commit()
         return cur.rowcount > 0
@@ -444,10 +376,6 @@ class Database:
             raise SkillNotFoundError(f'Skill "{skill_name}" does not exist')
 
         if skill.is_group:
-            # Own direct sessions (if any were logged straight to the
-            # group) plus every member's sessions — single source of
-            # truth for a group's hours, so stats/rank/list all agree
-            # automatically without each needing their own rollup logic.
             row = self._conn.execute(
                 """SELECT COALESCE(SUM(hours), 0) AS total FROM sessions
                    WHERE skill_id = ?

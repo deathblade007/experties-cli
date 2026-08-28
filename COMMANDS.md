@@ -23,7 +23,8 @@ it's the only place that will show plugin-added commands too.
 | `experties group create <name>` | Create a group ("super skill") |
 | `experties group add <group> <skill>` | Add a skill as a member of a group |
 | `experties group remove <skill>` | Remove a skill from its group |
-| `experties group list` | Show every group, hours, and members |
+| `experties group rename <old> <new>` | Rename a group (history moves with it) |
+| `experties group list` | Show every group, its hours, and its members |
 | `experties cd <group>` | Focus `list` on one group, like cd into a folder |
 | `experties commands` | Quick in-terminal command summary |
 | `experties plugins` | Show loaded plugins |
@@ -36,6 +37,9 @@ Shows every skill you've logged time against: current rank, total hours,
 a progress bar toward the next rank, and how many hours are left to get
 there. A `GLOBAL` row at the bottom applies the same rank table to your
 hours summed across every skill.
+
+If you've `cd`'d into a group, this shows that group's members instead
+— see the Groups section below.
 
 ```bash
 experties list
@@ -100,9 +104,15 @@ new name — no separate "create skill" step needed.
 Shows current rank and progress for one skill, plus a table of its most
 recent sessions (with their IDs — useful for `experties delete`).
 
+For a group, sessions from every member are merged into this view (plus
+any hours logged directly to the group itself), sorted together by
+recency, with an extra "Skill" column so you can tell which session came
+from which member.
+
 ```bash
 experties stats Coding
 experties stats Coding --limit 25
+experties stats "Machine Learning"
 ```
 
 | Option | Default | Description |
@@ -145,7 +155,9 @@ experties delete 12 --yes   # skip the confirmation prompt
 ## `experties skill rename <old_name> <new_name>`
 
 Renames a skill. Its id and every session logged against it are
-unaffected — the full history moves to the new name.
+unaffected — the full history moves to the new name. Works on groups
+too (it preserves the group flag), but `experties group rename` is the
+more discoverable, guarded way to do that specifically — see below.
 
 ```bash
 experties skill rename Codnig Coding
@@ -162,6 +174,9 @@ Deletes a skill **and every session ever logged against it.** Unlike
 `experties delete <id>`, which only removes one session and leaves the
 skill in place, this takes the skill's entire history with it. There is
 no undo — back up `~/.experties/data.db` first if you're unsure.
+
+Deleting a *group* this way does **not** delete its members — they
+survive, just ungrouped.
 
 ```bash
 experties skill delete Guitar
@@ -208,6 +223,16 @@ removed from that one first (`experties group remove`).
 ### `experties group remove <skill>`
 Removes a skill from its group. The skill and its history are
 untouched — only the grouping is undone.
+
+### `experties group rename <old_name> <new_name>`
+Renames a group. Its members and rolled-up history move with it.
+Rejects the name if it doesn't belong to an actual group — use
+`experties skill rename` instead if you genuinely want to rename a
+regular (non-group) skill.
+
+```bash
+experties group rename "Machine Learning" ML
+```
 
 ### `experties group list`
 Shows every group: rolled-up hours, rank, and its members.
