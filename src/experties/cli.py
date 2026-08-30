@@ -72,7 +72,7 @@ def _rank_row(hours: float) -> tuple[str, str, str, str]:
 
 @app.command("list")
 def list_skills() -> None:
-    """Show skills, ranks, hours, and progress. If you've `cd`'d into a group, shows that group's members instead of everything."""
+    """Show skills, ranks, hours, and progress. Groups show their member skills nested underneath. If you've `cd`'d into a group, shows that group's members instead of everything."""
     current_group_name = _get_current_group()
 
     with Database() as db:
@@ -89,6 +89,16 @@ def list_skills() -> None:
         else:
             skills_with_hours = db.get_top_level_skills_with_hours()
             group_total = None
+
+        # Pre-fetch each group's own members so they can be nested directly
+        # underneath their row. Members are never groups themselves (no
+        # nesting allowed), so this dict stays empty while `cd`'d into a
+        # group — nothing extra to nest in that view.
+        members_by_group_id = {
+            skill.id: [(m, db.get_total_hours(m.name)) for m in db.get_group_members(skill.name)]
+            for skill, _ in skills_with_hours
+            if skill.is_group
+        }
 
         global_hours = db.get_global_total_hours()
 
@@ -119,6 +129,19 @@ def list_skills() -> None:
         label = f"\u25b8 {skill.name}" if skill.is_group else skill.name
         rank_name, hours_display, progress, hours_left = _rank_row(hours)
         table.add_row(label, rank_name, hours_display, progress, hours_left)
+
+        members = members_by_group_id.get(skill.id, [])
+        for member, member_hours in members:
+            m_rank, m_hours, m_progress, m_left = _rank_row(member_hours)
+            table.add_row(
+                f"[dim]  \u2514 {member.name}[/dim]",
+                f"[dim]{m_rank}[/dim]",
+                f"[dim]{m_hours}[/dim]",
+                f"[dim]{m_progress}[/dim]",
+                f"[dim]{m_left}[/dim]",
+            )
+        if skill.is_group and not members:
+            table.add_row("[dim]  \u2514 (no members yet)[/dim]", "", "", "", "")
 
     table.add_section()
     if group is not None:

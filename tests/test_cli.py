@@ -366,7 +366,7 @@ def test_cd_with_no_args_goes_back_to_top_level(tmp_path):
     assert "top level" in result.output
 
 
-def test_list_at_top_level_shows_group_rolled_up_not_members(tmp_path):
+def test_list_at_top_level_shows_group_members_nested(tmp_path):
     db_path = tmp_path / "data.db"
     _run("group", "create", "Machine Learning", db_path=db_path)
     _run("group", "add", "Machine Learning", "Python", db_path=db_path)
@@ -378,9 +378,19 @@ def test_list_at_top_level_shows_group_rolled_up_not_members(tmp_path):
     result = _run("list", db_path=db_path)
     assert "Machine Learning" in result.output
     assert "Guitar" in result.output
-    assert "Python" not in result.output
-    assert "Maths" not in result.output
+    assert "Python" in result.output
+    assert "Maths" in result.output
     assert "5.0h" in result.output
+
+
+def test_list_at_top_level_shows_empty_group_placeholder(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    _run("log", "Guitar", "--time", "1h", db_path=db_path)
+
+    result = _run("list", db_path=db_path)
+    assert "Machine Learning" in result.output
+    assert "no members yet" in result.output
 
 
 def test_list_after_cd_shows_group_members(tmp_path):
