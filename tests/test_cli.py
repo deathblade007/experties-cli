@@ -1,4 +1,5 @@
 import os
+import time
 
 from typer.testing import CliRunner
 
@@ -483,3 +484,96 @@ def test_stats_on_regular_skill_has_no_skill_column(tmp_path):
     _run("log", "Python", "--time", "1h", db_path=db_path)
     result = _run("stats", "Python", db_path=db_path)
     assert "┃ Skill" not in result.output
+
+
+# -- background timers ------------------------------------------------------
+
+def test_timer_start_then_status_shows_it_running(tmp_path):
+    db_path = tmp_path / "data.db"
+    result = _run("timer", "start", "Python", db_path=db_path)
+    assert result.exit_code == 0
+    assert "Timer started" in result.output
+
+    status = _run("timer", "status", db_path=db_path)
+    assert "Python" in status.output
+
+
+def test_timer_start_twice_for_same_skill_errors(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("timer", "start", "Python", db_path=db_path)
+    result = _run("timer", "start", "Python", db_path=db_path)
+    assert result.exit_code == 1
+    assert "already running" in result.output
+
+
+def test_timer_start_two_different_skills_both_show_in_status(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("timer", "start", "Python", db_path=db_path)
+    _run("timer", "start", "Maths", db_path=db_path)
+    status = _run("timer", "status", db_path=db_path)
+    assert "Python" in status.output
+    assert "Maths" in status.output
+
+
+def test_timer_status_with_nothing_running_shows_hint(tmp_path):
+    db_path = tmp_path / "data.db"
+    result = _run("timer", "status", db_path=db_path)
+    assert "No timers running" in result.output
+
+
+def test_timer_stop_logs_a_session(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("timer", "start", "Python", db_path=db_path)
+    result = _run("timer", "stop", "Python", db_path=db_path, input="\n")
+    assert result.exit_code == 0
+    assert "Logged" in result.output
+
+    with Database(db_path) as db:
+        assert db.get_active_timer("Python") is None
+        assert db.get_total_hours("Python") > 0
+
+
+def test_timer_stop_with_nothing_running_errors(tmp_path):
+    db_path = tmp_path / "data.db"
+    result = _run("timer", "stop", "Python", db_path=db_path, input="\n")
+    assert result.exit_code == 1
+    assert "No timer is running" in result.output
+
+
+def test_timer_cancel_logs_nothing(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("timer", "start", "Python", db_path=db_path)
+    result = _run("timer", "cancel", "Python", db_path=db_path)
+    assert result.exit_code == 0
+    assert "cancelled" in result.output
+
+    with Database(db_path) as db:
+        assert db.get_active_timer("Python") is None
+        assert db.get_total_hours("Python") == 0.0
+
+
+def test_two_concurrent_group_timers_count_the_overlap_once_in_the_group_total(tmp_path):
+    # This is the actual scenario that was asked for: start two members of
+    # the same group at once, stop them, and confirm the group's total
+    # doesn't double the overlapping time.
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    _run("group", "add", "Machine Learning", "Python", db_path=db_path)
+    _run("group", "add", "Machine Learning", "Maths", db_path=db_path)
+
+    _run("timer", "start", "Python", db_path=db_path)
+    _run("timer", "start", "Maths", db_path=db_path)
+    time.sleep(0.05)
+    _run("timer", "stop", "Python", db_path=db_path, input="\n")
+    _run("timer", "stop", "Maths", db_path=db_path, input="\n")
+
+    with Database(db_path) as db:
+        python_hours = db.get_total_hours("Python")
+        maths_hours = db.get_total_hours("Maths")
+        group_hours = db.get_total_hours("Machine Learning")
+        global_hours = db.get_global_total_hours()
+
+        # Both ran essentially the whole window concurrently, so the
+        # group's total should be close to just one of them, not their sum.
+        assert group_hours < (python_hours + maths_hours) * 0.9
+        assert global_hours == group_hours

@@ -37,12 +37,19 @@ CREATE TABLE IF NOT EXISTS skills (
     created_at TEXT NOT NULL
 );
 
+-- started_at/ended_at are only set when a session came from a real timer
+-- (either `start` or `timer start`/`timer stop`) — they're the actual
+-- wall-clock interval the work happened in, used to dedupe overlapping
+-- time when rolling hours up (see _merge_interval_hours). Manually
+-- logged time (`experties log --time`) has no known interval, so both
+-- stay NULL and that session just adds on top, same as it always has.
 CREATE TABLE IF NOT EXISTS sessions (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     skill_id   INTEGER NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
     hours      REAL NOT NULL CHECK (hours > 0),
     note       TEXT,
     started_at TEXT,
+    ended_at   TEXT,
     logged_at  TEXT NOT NULL
 );
 
@@ -58,11 +65,59 @@ CREATE TABLE IF NOT EXISTS skill_groups (
     child_skill_id  INTEGER PRIMARY KEY REFERENCES skills(id) ON DELETE CASCADE,
     parent_skill_id INTEGER NOT NULL REFERENCES skills(id) ON DELETE CASCADE
 );
+
+-- A skill can have at most one timer running at once (skill_id is the
+-- primary key). Rows here are transient — `timer stop` deletes the row
+-- and turns it into a real session; `timer cancel` just deletes it.
+CREATE TABLE IF NOT EXISTS active_timers (
+    skill_id   INTEGER PRIMARY KEY REFERENCES skills(id) ON DELETE CASCADE,
+    started_at TEXT NOT NULL
+);
 """
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _parse_iso(value: str) -> datetime:
+    return datetime.fromisoformat(value)
+
+
+def _merge_interval_hours(sessions: list["Session"]) -> float:
+    """
+    Total hours across these sessions, counting overlapping wall-clock
+    time only once. Sessions that came from a real timer carry a known
+    [started_at, ended_at) interval; those get sorted and merged, so two
+    things tracked at the same time only count that overlap once.
+    Manually logged time (`experties log --time`) has no known interval —
+    there's nothing to compare it against — so it just adds on top,
+    exactly as it always has.
+    """
+    dated: list[tuple[datetime, datetime]] = []
+    additive_hours = 0.0
+    for s in sessions:
+        if s.started_at and s.ended_at:
+            dated.append((_parse_iso(s.started_at), _parse_iso(s.ended_at)))
+        else:
+            additive_hours += s.hours
+
+    if not dated:
+        return additive_hours
+
+    dated.sort(key=lambda interval: interval[0])
+    merged_seconds = 0.0
+    current_start, current_end = dated[0]
+    for start, end in dated[1:]:
+        if start <= current_end:
+            if end > current_end:
+                current_end = end
+        else:
+            merged_seconds += (current_end - current_start).total_seconds()
+            current_start, current_end = start, end
+    merged_seconds += (current_end - current_start).total_seconds()
+
+    return additive_hours + merged_seconds / 3600
 
 
 @dataclass(frozen=True)
@@ -79,6 +134,7 @@ class Session:
     hours: float
     note: str | None
     started_at: str | None
+    ended_at: str | None
     logged_at: str
 
 
@@ -119,7 +175,13 @@ class Database:
 
     def _init_schema(self) -> None:
         self._conn.executescript(_SCHEMA)
+        self._migrate_add_ended_at_column()
         self._conn.commit()
+
+    def _migrate_add_ended_at_column(self) -> None:
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(sessions)")}
+        if "ended_at" not in columns:
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN ended_at TEXT")
 
     # -- skills --------------------------------------------------------
 
@@ -329,6 +391,7 @@ class Database:
         hours: float,
         note: str | None = None,
         started_at: str | None = None,
+        ended_at: str | None = None,
         create_skill_if_missing: bool = True,
     ) -> Session:
         if hours <= 0:
@@ -344,9 +407,9 @@ class Database:
         note = note.strip() or None if note else None
         logged_at = _now_iso()
         cur = self._conn.execute(
-            """INSERT INTO sessions (skill_id, hours, note, started_at, logged_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (skill.id, hours, note, started_at, logged_at),
+            """INSERT INTO sessions (skill_id, hours, note, started_at, ended_at, logged_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (skill.id, hours, note, started_at, ended_at, logged_at),
         )
         self._conn.commit()
         return Session(
@@ -355,6 +418,7 @@ class Database:
             hours=hours,
             note=note,
             started_at=started_at,
+            ended_at=ended_at,
             logged_at=logged_at,
         )
 
@@ -362,7 +426,11 @@ class Database:
         skill = self.get_skill(skill_name)
         if skill is None:
             raise SkillNotFoundError(f'Skill "{skill_name}" does not exist')
+        return self._fetch_subtree_sessions(skill.id, newest_first=True, limit=limit)
 
+    def _fetch_subtree_sessions(
+        self, skill_id: int, newest_first: bool = False, limit: int | None = None
+    ) -> list[Session]:
         query = """
             WITH RECURSIVE subtree(id) AS (
                 SELECT ?
@@ -373,9 +441,10 @@ class Database:
             )
             SELECT sessions.* FROM sessions
             WHERE sessions.skill_id IN (SELECT id FROM subtree)
-            ORDER BY sessions.id DESC
         """
-        params: tuple = (skill.id,)
+        params: tuple = (skill_id,)
+        if newest_first:
+            query += " ORDER BY sessions.id DESC"
         if limit is not None:
             query += " LIMIT ?"
             params = params + (limit,)
@@ -417,28 +486,82 @@ class Database:
         skill = self.get_skill(skill_name)
         if skill is None:
             raise SkillNotFoundError(f'Skill "{skill_name}" does not exist')
-
-        row = self._conn.execute(
-            """
-            WITH RECURSIVE subtree(id) AS (
-                SELECT ?
-                UNION ALL
-                SELECT skill_groups.child_skill_id
-                FROM skill_groups
-                JOIN subtree ON skill_groups.parent_skill_id = subtree.id
-            )
-            SELECT COALESCE(SUM(sessions.hours), 0) AS total FROM sessions
-            WHERE sessions.skill_id IN (SELECT id FROM subtree)
-            """,
-            (skill.id,),
-        ).fetchone()
-        return row["total"]
+        return _merge_interval_hours(self._fetch_subtree_sessions(skill.id))
 
     def get_global_total_hours(self) -> float:
-        row = self._conn.execute(
-            "SELECT COALESCE(SUM(hours), 0) AS total FROM sessions"
+        rows = self._conn.execute("SELECT * FROM sessions").fetchall()
+        return _merge_interval_hours([_row_to_session(r) for r in rows])
+
+    # -- background timers -------------------------------------------------
+
+    def start_timer(self, skill_name: str) -> str:
+        """Start a background timer for a skill. Returns started_at. Raises
+        ValueError if one is already running for it."""
+        skill = self.get_or_create_skill(skill_name)
+        existing = self._conn.execute(
+            "SELECT started_at FROM active_timers WHERE skill_id = ?", (skill.id,)
         ).fetchone()
-        return row["total"]
+        if existing is not None:
+            started_display = existing["started_at"].split(".")[0]
+            raise ValueError(f'A timer for "{skill.name}" is already running (started {started_display}).')
+        started_at = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            "INSERT INTO active_timers (skill_id, started_at) VALUES (?, ?)",
+            (skill.id, started_at),
+        )
+        self._conn.commit()
+        return started_at
+
+    def get_active_timer(self, skill_name: str) -> str | None:
+        """started_at if a timer is currently running for this skill, else None."""
+        skill = self.get_skill(skill_name)
+        if skill is None:
+            return None
+        row = self._conn.execute(
+            "SELECT started_at FROM active_timers WHERE skill_id = ?", (skill.id,)
+        ).fetchone()
+        return row["started_at"] if row else None
+
+    def list_active_timers(self) -> list[tuple[Skill, str]]:
+        """(skill, started_at) for every currently-running timer, oldest first."""
+        rows = self._conn.execute(
+            """SELECT skills.*, active_timers.started_at AS timer_started_at
+               FROM active_timers
+               JOIN skills ON skills.id = active_timers.skill_id
+               ORDER BY active_timers.started_at ASC"""
+        ).fetchall()
+        return [(_row_to_skill(r), r["timer_started_at"]) for r in rows]
+
+    def stop_timer(self, skill_name: str) -> tuple[str, str, float]:
+        """
+        Stop a running background timer. Returns (started_at, ended_at,
+        hours) for the caller to log as a session (kept separate from
+        logging so the CLI can prompt for a note in between). Raises
+        ValueError if no timer is running for this skill.
+        """
+        started_at = self.get_active_timer(skill_name)
+        if started_at is None:
+            raise ValueError(f'No timer is running for "{skill_name}".')
+        skill = self.get_skill(skill_name)
+        # started_at was stored floored to the second, so it's always <=
+        # the true start instant — comparing it against a full-precision
+        # "now" (rather than a second-truncated one) keeps hours strictly
+        # positive even when start and stop land in the same second.
+        ended_dt = datetime.now(timezone.utc)
+        hours = (ended_dt - _parse_iso(started_at)).total_seconds() / 3600
+        ended_at = ended_dt.isoformat()
+        self._conn.execute("DELETE FROM active_timers WHERE skill_id = ?", (skill.id,))
+        self._conn.commit()
+        return started_at, ended_at, hours
+
+    def cancel_timer(self, skill_name: str) -> None:
+        """Abandon a running background timer without logging anything."""
+        started_at = self.get_active_timer(skill_name)
+        if started_at is None:
+            raise ValueError(f'No timer is running for "{skill_name}".')
+        skill = self.get_skill(skill_name)
+        self._conn.execute("DELETE FROM active_timers WHERE skill_id = ?", (skill.id,))
+        self._conn.commit()
 
 
 def _row_to_skill(row: sqlite3.Row) -> Skill:
@@ -456,5 +579,6 @@ def _row_to_session(row: sqlite3.Row) -> Session:
         hours=row["hours"],
         note=row["note"],
         started_at=row["started_at"],
+        ended_at=row["ended_at"],
         logged_at=row["logged_at"],
     )

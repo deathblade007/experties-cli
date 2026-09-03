@@ -464,3 +464,113 @@ def test_get_all_sessions_ordered_most_recent_first(db):
 
 def test_get_all_sessions_empty_database(db):
     assert db.get_all_sessions() == []
+
+
+# -- interval-aware rollups (overlapping timers count once) ----------------
+
+def test_get_total_hours_dedupes_a_skills_own_overlapping_sessions(db):
+    db.log_session("Python", 1.0, started_at="2026-01-01T09:00:00+00:00", ended_at="2026-01-01T10:00:00+00:00")
+    db.log_session("Python", 1.0, started_at="2026-01-01T09:30:00+00:00", ended_at="2026-01-01T10:30:00+00:00")
+    assert db.get_total_hours("Python") == 1.5  # union of 09:00-10:30, not 2.0
+
+
+def test_get_total_hours_does_not_merge_non_overlapping_sessions(db):
+    db.log_session("Python", 1.0, started_at="2026-01-01T09:00:00+00:00", ended_at="2026-01-01T10:00:00+00:00")
+    db.log_session("Python", 1.0, started_at="2026-01-01T11:00:00+00:00", ended_at="2026-01-01T12:00:00+00:00")
+    assert db.get_total_hours("Python") == 2.0
+
+
+def test_manually_logged_sessions_are_never_deduped(db):
+    # No interval on record for either — always additive, exactly as before.
+    db.log_session("Python", 1.0)
+    db.log_session("Python", 1.0)
+    assert db.get_total_hours("Python") == 2.0
+
+
+def test_group_total_dedupes_overlapping_time_across_members(db):
+    db.create_group("Machine Learning")
+    db.add_to_group("Machine Learning", "Python")
+    db.add_to_group("Machine Learning", "Maths")
+    db.log_session("Python", 1.0, started_at="2026-01-01T09:00:00+00:00", ended_at="2026-01-01T10:00:00+00:00")
+    db.log_session("Maths", 1.0, started_at="2026-01-01T09:30:00+00:00", ended_at="2026-01-01T10:30:00+00:00")
+
+    # Each skill's own total is unaffected...
+    assert db.get_total_hours("Python") == 1.0
+    assert db.get_total_hours("Maths") == 1.0
+    # ...but the group counts the overlapping half hour once, not twice.
+    assert db.get_total_hours("Machine Learning") == 1.5
+
+
+def test_group_total_does_not_dedupe_against_sessions_outside_the_group(db):
+    db.create_group("Machine Learning")
+    db.add_to_group("Machine Learning", "Python")
+    db.log_session("Python", 1.0, started_at="2026-01-01T09:00:00+00:00", ended_at="2026-01-01T10:00:00+00:00")
+    db.log_session("Guitar", 1.0, started_at="2026-01-01T09:00:00+00:00", ended_at="2026-01-01T10:00:00+00:00")
+    assert db.get_total_hours("Machine Learning") == 1.0  # Guitar isn't in scope
+    assert db.get_total_hours("Guitar") == 1.0
+
+
+def test_global_total_dedupes_overlapping_time_across_unrelated_skills(db):
+    db.log_session("Python", 1.0, started_at="2026-01-01T09:00:00+00:00", ended_at="2026-01-01T10:00:00+00:00")
+    db.log_session("Guitar", 1.0, started_at="2026-01-01T09:30:00+00:00", ended_at="2026-01-01T10:30:00+00:00")
+    assert db.get_global_total_hours() == 1.5  # union, not 2.0
+    assert db.get_total_hours("Python") == 1.0
+    assert db.get_total_hours("Guitar") == 1.0
+
+
+def test_global_total_adds_manual_logs_on_top_of_deduped_timer_time(db):
+    db.log_session("Python", 1.0, started_at="2026-01-01T09:00:00+00:00", ended_at="2026-01-01T10:00:00+00:00")
+    db.log_session("Guitar", 1.0, started_at="2026-01-01T09:30:00+00:00", ended_at="2026-01-01T10:30:00+00:00")
+    db.log_session("Reading", 0.5)  # manually logged, no interval
+    assert db.get_global_total_hours() == 2.0  # 1.5 (union) + 0.5 (additive)
+
+
+# -- background timers ------------------------------------------------------
+
+def test_start_timer_records_an_active_timer(db):
+    started_at = db.start_timer("Python")
+    assert started_at is not None
+    assert db.get_active_timer("Python") == started_at
+    assert db.get_skill("Python") is not None  # auto-created
+
+
+def test_start_timer_rejects_starting_twice_for_the_same_skill(db):
+    db.start_timer("Python")
+    with pytest.raises(ValueError):
+        db.start_timer("Python")
+
+
+def test_start_timer_allows_two_different_skills_at_once(db):
+    db.start_timer("Python")
+    db.start_timer("Maths")
+    running = {s.name for s, _ in db.list_active_timers()}
+    assert running == {"Python", "Maths"}
+
+
+def test_stop_timer_logs_a_positive_duration_and_clears_the_active_timer(db):
+    db.start_timer("Python")
+    started_at, ended_at, hours = db.stop_timer("Python")
+    assert hours > 0
+    assert started_at is not None and ended_at is not None
+    assert db.get_active_timer("Python") is None
+
+
+def test_stop_timer_rejects_when_nothing_is_running(db):
+    with pytest.raises(ValueError):
+        db.stop_timer("Python")
+
+
+def test_cancel_timer_clears_it_without_logging_anything(db):
+    db.start_timer("Python")
+    db.cancel_timer("Python")
+    assert db.get_active_timer("Python") is None
+    assert db.get_total_hours("Python") == 0.0
+
+
+def test_cancel_timer_rejects_when_nothing_is_running(db):
+    with pytest.raises(ValueError):
+        db.cancel_timer("Python")
+
+
+def test_list_active_timers_empty_when_none_running(db):
+    assert db.list_active_timers() == []

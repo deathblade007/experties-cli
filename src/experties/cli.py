@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -269,8 +270,12 @@ class _CommandInfo:
 
 _COMMAND_REFERENCE: list[_CommandInfo] = [
     _CommandInfo("list", "Show every skill, its rank, hours, and progress to the next rank.", "experties list"),
-    _CommandInfo("start", "Run a live focus-session timer for a skill.", "experties start Coding"),
+    _CommandInfo("start", "Run a live focus-session timer for a skill (blocks the terminal).", "experties start Coding"),
     _CommandInfo("log", "Manually log time spent on a skill.", 'experties log Coding --time 1h30m --note "fixed a bug"'),
+    _CommandInfo("timer start", "Start a background timer — start several at once for different skills.", "experties timer start Coding"),
+    _CommandInfo("timer stop", "Stop a background timer and log the time (overlaps with another timer count once in shared totals).", "experties timer stop Coding"),
+    _CommandInfo("timer status", "Show every timer currently running.", "experties timer status"),
+    _CommandInfo("timer cancel", "Abandon a running background timer without logging anything.", "experties timer cancel Coding"),
     _CommandInfo("stats", "Show rank progress and recent session history for one skill.", "experties stats Coding"),
     _CommandInfo("rank-table", "Show the full rank ladder and required hours per tier.", "experties rank-table"),
     _CommandInfo("delete", "Delete a single logged session by its id.", "experties delete 12"),
@@ -306,14 +311,24 @@ def commands() -> None:
     )
 
 
-def _commit_and_report(skill: str, hours: float, note: Optional[str]) -> None:
+def _commit_and_report(skill: str, hours: float, note: Optional[str], started_at: Optional[str] = None) -> None:
     """Shared by `log` and `start`: write the session, print the new
-    total, and announce any rank-ups crossed."""
+    total, and announce any rank-ups crossed.
+
+    started_at, when given, is the real wall-clock moment the work
+    began — ended_at is derived from it as started_at + hours (rather
+    than the literal wall-clock stop moment) so a paused `start` session
+    never claims more wall-clock span than the hours it actually logged;
+    a background `timer stop` has no pauses, so this is exact for it."""
+    ended_at = None
+    if started_at is not None:
+        ended_at = (datetime.fromisoformat(started_at) + timedelta(hours=hours)).isoformat()
+
     with Database() as db:
         existing = db.get_skill(skill)
         hours_before = db.get_total_hours(skill) if existing is not None else 0.0
-        db.log_session(skill, hours, note=note)
-        hours_after = hours_before + hours
+        db.log_session(skill, hours, note=note, started_at=started_at, ended_at=ended_at)
+        hours_after = db.get_total_hours(skill)
 
     console.print(f'[green]Logged {hours:.2f}h to "{skill}".[/green] Total: {hours_after:.1f}h')
 
@@ -342,8 +357,9 @@ def log(
 
 @app.command()
 def start(skill: str = typer.Argument(..., help="Skill name")) -> None:
-    """Start a live focus-session timer for a skill."""
+    """Start a live focus-session timer for a skill. Blocks this terminal — for tracking several things at once in the background, use `experties timer start` instead."""
     console.print(f'Starting timer for "{skill}"...\n')
+    started_at = datetime.now(timezone.utc).isoformat()
     result = run_timer(skill)
 
     if result.cancelled or result.elapsed_seconds <= 0:
@@ -353,7 +369,7 @@ def start(skill: str = typer.Argument(..., help="Skill name")) -> None:
     hours = result.elapsed_seconds / 3600
     note = typer.prompt("Add a note? (press Enter to skip)", default="", show_default=False)
 
-    _commit_and_report(skill, hours, note or None)
+    _commit_and_report(skill, hours, note or None, started_at=started_at)
 
 
 @app.command()
@@ -445,6 +461,89 @@ def skill_delete(
 
 
 app.add_typer(skill_app, name="skill")
+
+
+timer_app = typer.Typer(
+    help="Background timers — start as many as you like at once, unlike `experties start` which takes over the terminal for one."
+)
+
+
+def _format_clock_time(iso_str: str) -> str:
+    """Friendly display for a stored timestamp — sub-second precision is
+    kept in storage for accurate interval math, but has no reason to
+    show up on screen."""
+    return datetime.fromisoformat(iso_str).strftime("%Y-%m-%d %H:%M:%S")
+
+
+@timer_app.command("start")
+def timer_start(skill: str = typer.Argument(..., help="Skill name — created automatically if new")) -> None:
+    """Start a background timer for a skill. Returns immediately — start another for a different skill right after if you're working on both."""
+    with Database() as db:
+        try:
+            started_at = db.start_timer(skill)
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(code=1)
+
+    console.print(
+        f'[green]Timer started for "{skill}"[/green] at {_format_clock_time(started_at)}. '
+        f'Stop it with [bold]experties timer stop "{skill}"[/bold].'
+    )
+
+
+@timer_app.command("stop")
+def timer_stop(skill: str = typer.Argument(..., help="Skill with a running timer")) -> None:
+    """Stop a background timer and log the time. If it overlapped with another timer you ran at the same time, the overlap only counts once in any shared total (like GLOBAL, or a group both skills belong to)."""
+    with Database() as db:
+        try:
+            started_at, ended_at, hours = db.stop_timer(skill)
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(code=1)
+
+    note = typer.prompt("Add a note? (press Enter to skip)", default="", show_default=False)
+    _commit_and_report(skill, hours, note or None, started_at=started_at)
+
+
+@timer_app.command("cancel")
+def timer_cancel(skill: str = typer.Argument(..., help="Skill with a running timer")) -> None:
+    """Abandon a running background timer without logging anything."""
+    with Database() as db:
+        try:
+            db.cancel_timer(skill)
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(code=1)
+
+    console.print(f'[yellow]Timer for "{skill}" cancelled — nothing logged.[/yellow]')
+
+
+@timer_app.command("status")
+def timer_status() -> None:
+    """Show every timer currently running, and how long each has been going."""
+    with Database() as db:
+        active = db.list_active_timers()
+
+    if not active:
+        console.print("[dim]No timers running.[/dim] Start one with [bold]experties timer start <skill>[/bold].")
+        return
+
+    now = datetime.now(timezone.utc)
+    table = Table(title="Running Timers")
+    table.add_column("Skill", style="bold")
+    table.add_column("Started")
+    table.add_column("Elapsed", justify="right")
+    for skill, started_at in active:
+        elapsed = now - datetime.fromisoformat(started_at)
+        total_seconds = max(0, int(elapsed.total_seconds()))
+        h, remainder = divmod(total_seconds, 3600)
+        m, s = divmod(remainder, 60)
+        table.add_row(skill.name, _format_clock_time(started_at), f"{h:02d}:{m:02d}:{s:02d}")
+
+    console.print(table)
+
+
+app.add_typer(timer_app, name="timer")
 
 
 group_app = typer.Typer(help='Group skills into a "super skill" whose hours roll up from its members.')
