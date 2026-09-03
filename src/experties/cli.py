@@ -70,17 +70,39 @@ def _rank_row(hours: float) -> tuple[str, str, str, str]:
     return status.display_name, f"{hours:.1f}h", progress, hours_left_display
 
 
+def _flatten_tree(
+    db: Database,
+    skills_with_hours: list[tuple],
+    group_ids: set[int],
+    depth: int = 0,
+) -> list[tuple]:
+    """
+    Depth-first flatten of a level of (skill, hours) pairs into
+    (skill, hours, depth) rows, recursing into each skill's own members
+    for as many levels as the tree actually goes. group_ids is the set
+    of skill ids that currently have at least one member — precomputed
+    once per command so this doesn't re-derive "is this a group" per row.
+    """
+    rows = []
+    for skill, hours in skills_with_hours:
+        rows.append((skill, hours, depth))
+        if skill.id in group_ids:
+            members = db.get_group_members(skill.name)
+            member_rows = [(m, db.get_total_hours(m.name)) for m in members]
+            rows.extend(_flatten_tree(db, member_rows, group_ids, depth + 1))
+    return rows
+
+
 @app.command("list")
 def list_skills() -> None:
-    """Show skills, ranks, hours, and progress. Groups show their member skills nested underneath. If you've `cd`'d into a group, shows that group's members instead of everything."""
+    """Show skills, ranks, hours, and progress. Any skill with members shows them nested underneath, however deep the nesting goes. If you've `cd`'d into a skill, shows that skill's subtree instead of everything."""
     current_group_name = _get_current_group()
 
     with Database() as db:
         group = db.get_skill(current_group_name) if current_group_name else None
-        if current_group_name and (group is None or not group.is_group):
+        if current_group_name and group is None:
             _set_current_group(None)
             current_group_name = None
-            group = None
 
         if group is not None:
             member_skills = db.get_group_members(group.name)
@@ -90,20 +112,12 @@ def list_skills() -> None:
             skills_with_hours = db.get_top_level_skills_with_hours()
             group_total = None
 
-        # Pre-fetch each group's own members so they can be nested directly
-        # underneath their row. Members are never groups themselves (no
-        # nesting allowed), so this dict stays empty while `cd`'d into a
-        # group — nothing extra to nest in that view.
-        members_by_group_id = {
-            skill.id: [(m, db.get_total_hours(m.name)) for m in db.get_group_members(skill.name)]
-            for skill, _ in skills_with_hours
-            if skill.is_group
-        }
-
+        group_ids = {g.id for g in db.list_groups()}
+        rows = _flatten_tree(db, skills_with_hours, group_ids)
         global_hours = db.get_global_total_hours()
 
     if group is not None:
-        console.print(f'[dim]Inside group "{group.name}" — run [bold]experties cd[/bold] to go back[/dim]\n')
+        console.print(f'[dim]Inside "{group.name}" — run [bold]experties cd[/bold] to go back[/dim]\n')
 
     if not skills_with_hours and group is None:
         console.print(
@@ -125,23 +139,20 @@ def list_skills() -> None:
     table.add_column("Progress")
     table.add_column("Left", justify="right")
 
-    for skill, hours in skills_with_hours:
-        label = f"\u25b8 {skill.name}" if skill.is_group else skill.name
+    for skill, hours, depth in rows:
+        marker = "\u25b8 " if skill.id in group_ids else ""
         rank_name, hours_display, progress, hours_left = _rank_row(hours)
-        table.add_row(label, rank_name, hours_display, progress, hours_left)
-
-        members = members_by_group_id.get(skill.id, [])
-        for member, member_hours in members:
-            m_rank, m_hours, m_progress, m_left = _rank_row(member_hours)
+        if depth == 0:
+            table.add_row(f"{marker}{skill.name}", rank_name, hours_display, progress, hours_left)
+        else:
+            indent = "  " * depth
             table.add_row(
-                f"[dim]  \u2514 {member.name}[/dim]",
-                f"[dim]{m_rank}[/dim]",
-                f"[dim]{m_hours}[/dim]",
-                f"[dim]{m_progress}[/dim]",
-                f"[dim]{m_left}[/dim]",
+                f"[dim]{indent}\u2514 {marker}{skill.name}[/dim]",
+                f"[dim]{rank_name}[/dim]",
+                f"[dim]{hours_display}[/dim]",
+                f"[dim]{progress}[/dim]",
+                f"[dim]{hours_left}[/dim]",
             )
-        if skill.is_group and not members:
-            table.add_row("[dim]  \u2514 (no members yet)[/dim]", "", "", "", "")
 
     table.add_section()
     if group is not None:
@@ -157,10 +168,10 @@ def list_skills() -> None:
 @app.command()
 def cd(
     group: Optional[str] = typer.Argument(
-        None, help="Group to focus `list` on. Omit (or use \"..\") to go back to the top level."
+        None, help="Skill to focus `list` on. Omit (or use \"..\") to go back to the top level."
     ),
 ) -> None:
-    """Focus `experties list` on one group's members, like cd into a folder — doesn't affect log/start/stats, which always take an exact skill name."""
+    """Focus `experties list` on one skill's subtree, like cd into a folder — doesn't affect log/start/stats, which always take an exact skill name."""
     if group is None or group in ("..", "/", "~"):
         _set_current_group(None)
         console.print("[green]Back to the top level.[/green]")
@@ -169,10 +180,8 @@ def cd(
     with Database() as db:
         skill = db.get_skill(group)
 
-    if skill is None or not skill.is_group:
-        console.print(
-            f'[red]"{group}" is not a group.[/red] Run [bold]experties group list[/bold] to see what exists.'
-        )
+    if skill is None:
+        console.print(f'[red]No skill named "{group}".[/red]')
         raise typer.Exit(code=1)
 
     _set_current_group(skill.name)
@@ -193,12 +202,12 @@ def stats(
 
         hours = db.get_total_hours(skill)
         sessions = db.get_sessions(skill, limit=limit)
+        descendants = db.get_descendants(skill)
+        is_group = bool(descendants)
 
-        skill_names_by_id: dict[int, str] = {}
-        if skill_obj.is_group:
-            skill_names_by_id[skill_obj.id] = skill_obj.name
-            for member in db.get_group_members(skill):
-                skill_names_by_id[member.id] = member.name
+        skill_names_by_id: dict[int, str] = {skill_obj.id: skill_obj.name}
+        for member in descendants:
+            skill_names_by_id[member.id] = member.name
 
     status = get_rank_status(hours)
     console.print(f"\n[bold]{skill}[/bold] — {status.display_name} ({hours:.1f}h total)")
@@ -217,14 +226,14 @@ def stats(
 
     table = Table(title=f"Recent sessions ({len(sessions)})")
     table.add_column("ID", justify="right")
-    if skill_obj.is_group:
+    if is_group:
         table.add_column("Skill")
     table.add_column("When")
     table.add_column("Hours", justify="right")
     table.add_column("Note")
     for s in sessions:
         row = [str(s.id)]
-        if skill_obj.is_group:
+        if is_group:
             row.append(skill_names_by_id.get(s.skill_id, "?"))
         row += [s.logged_at, f"{s.hours:.2f}h", s.note or ""]
         table.add_row(*row)
@@ -267,12 +276,12 @@ _COMMAND_REFERENCE: list[_CommandInfo] = [
     _CommandInfo("delete", "Delete a single logged session by its id.", "experties delete 12"),
     _CommandInfo("skill rename", "Rename a skill (keeps all its history).", "experties skill rename Coding Programming"),
     _CommandInfo("skill delete", "Delete a skill and every session logged against it.", "experties skill delete Guitar"),
-    _CommandInfo("group create", "Create a new group.", "experties group create \"Machine Learning\""),
-    _CommandInfo("group add", "Add a skill as a member of a group.", "experties group add \"Machine Learning\" Python"),
-    _CommandInfo("group remove", "Remove a skill from its group.", "experties group remove Python"),
-    _CommandInfo("group rename", "Rename a group (members and history move with it).", "experties group rename \"Machine Learning\" ML"),
-    _CommandInfo("group list", "Show every group, its hours, and its members.", "experties group list"),
-    _CommandInfo("cd", "Focus `list` on one group, like cd into a folder.", "experties cd \"Machine Learning\""),
+    _CommandInfo("group create", "Create an empty skill, ready to nest things under.", "experties group create \"Machine Learning\""),
+    _CommandInfo("group add", "Nest a skill under another — either can already have its own hours or members. Groups can nest inside groups.", "experties group add \"Machine Learning\" Python"),
+    _CommandInfo("group remove", "Remove a skill from its parent.", "experties group remove Python"),
+    _CommandInfo("group rename", "Rename a skill (same as `skill rename`; members and history move with it).", "experties group rename \"Machine Learning\" ML"),
+    _CommandInfo("group list", "Show every skill that currently has members, its hours, and those members.", "experties group list"),
+    _CommandInfo("cd", "Focus `list` on one skill's subtree, like cd into a folder.", "experties cd \"Machine Learning\""),
     _CommandInfo("commands", "Show this list.", "experties commands"),
     _CommandInfo("plugins", "Show the plugins directory and which plugin files are loaded.", "experties plugins"),
 ]
@@ -400,22 +409,31 @@ def skill_rename(
 
 @skill_app.command("delete")
 def skill_delete(
-    name: str = typer.Argument(..., help="Skill to delete, including every session logged against it"),
+    name: str = typer.Argument(..., help="Skill to delete, including every session logged directly against it"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt"),
 ) -> None:
-    """Delete a skill and every session ever logged against it. This cannot be undone."""
+    """Delete a skill and every session logged directly against it. Its members (if any) become top-level skills instead of being deleted. This cannot be undone."""
     with Database() as db:
         skill = db.get_skill(name)
         if skill is None:
             console.print(f'[red]No skill named "{name}".[/red]')
             raise typer.Exit(code=1)
 
-        hours = db.get_total_hours(name)
-        session_count = len(db.get_sessions(name))
-        console.print(
-            f'[yellow]This permanently deletes "{skill.name}" and all {session_count} '
-            f"session(s) ({hours:.1f}h total). There's no undo.[/yellow]"
+        own_sessions = [s for s in db.get_sessions(name) if s.skill_id == skill.id]
+        own_hours = sum(s.hours for s in own_sessions)
+        members = db.get_group_members(name)
+
+        message = (
+            f'[yellow]This permanently deletes "{skill.name}" and its {len(own_sessions)} '
+            f"own session(s) ({own_hours:.1f}h). There's no undo.[/yellow]"
         )
+        if members:
+            member_names = ", ".join(m.name for m in members)
+            message += (
+                f'\n[yellow]It has {len(members)} member(s) ({member_names}) — '
+                f"they'll become top-level skills, not deleted.[/yellow]"
+            )
+        console.print(message)
 
         if not yes and not typer.confirm("Are you sure?"):
             console.print("Cancelled.")
@@ -447,10 +465,10 @@ def group_create(name: str = typer.Argument(..., help="Name for the new group"))
 
 @group_app.command("add")
 def group_add(
-    group: str = typer.Argument(..., help="Group to add to (must already exist)"),
-    skill: str = typer.Argument(..., help="Skill to add — created automatically if new"),
+    group: str = typer.Argument(..., help="Group to add to — created automatically if new"),
+    skill: str = typer.Argument(..., help="Skill to add — created automatically if new. Can itself be a group."),
 ) -> None:
-    """Add a skill as a member of a group. Its own hours keep counting toward it AND roll up into the group's total."""
+    """Nest a skill under another. Its own hours keep counting toward it AND roll up into every ancestor's total — groups can be nested inside groups, as deep as you like."""
     with Database() as db:
         try:
             member = db.add_to_group(group, skill)
@@ -479,35 +497,32 @@ def group_remove(skill: str = typer.Argument(..., help="Skill to remove from its
 
 @group_app.command("rename")
 def group_rename(
-    old_name: str = typer.Argument(..., help="Current group name"),
-    new_name: str = typer.Argument(..., help="New group name"),
+    old_name: str = typer.Argument(..., help="Current name"),
+    new_name: str = typer.Argument(..., help="New name"),
 ) -> None:
-    """Rename a group. Its members and rolled-up history move with it — this is `experties skill rename`, guarded so it only accepts an actual group."""
+    """Rename a skill. Its members (if any) and rolled-up history move with it. Identical to `experties skill rename` — kept here too since it reads more naturally when you're thinking of the skill as a group."""
     with Database() as db:
-        skill = db.get_skill(old_name)
-        if skill is None or not skill.is_group:
-            console.print(
-                f'[red]"{old_name}" is not a group.[/red] Run [bold]experties group list[/bold] to see what exists.'
-            )
-            raise typer.Exit(code=1)
-
         try:
             renamed = db.rename_skill(old_name, new_name)
+        except SkillNotFoundError:
+            console.print(f'[red]No skill named "{old_name}".[/red]')
+            raise typer.Exit(code=1)
         except SkillAlreadyExistsError:
             console.print(f'[red]A skill named "{new_name}" already exists.[/red]')
             raise typer.Exit(code=1)
 
-    console.print(f'[green]Renamed group "{old_name}" to "{renamed.name}".[/green]')
+    console.print(f'[green]Renamed "{old_name}" to "{renamed.name}".[/green]')
 
 
 @group_app.command("list")
 def group_list() -> None:
-    """Show every group, its rolled-up hours, and its members — like `ls` at the top level."""
+    """Show every skill that currently has members, its rolled-up hours, and those members — like `ls` at the top level."""
     with Database() as db:
         groups = db.list_groups()
         if not groups:
             console.print(
-                '[yellow]No groups yet.[/yellow] Create one with [bold]experties group create <name>[/bold].'
+                '[yellow]No groups yet.[/yellow] Create one with [bold]experties group create <name>[/bold], '
+                "or nest an existing skill into another with [bold]experties group add[/bold]."
             )
             return
 
@@ -521,7 +536,7 @@ def group_list() -> None:
             hours = db.get_total_hours(group.name)
             status = get_rank_status(hours)
             members = db.get_group_members(group.name)
-            member_list = ", ".join(m.name for m in members) if members else "[dim](empty)[/dim]"
+            member_list = ", ".join(m.name for m in members)
             table.add_row(group.name, f"{hours:.1f}h", status.display_name, member_list)
 
     console.print(table)

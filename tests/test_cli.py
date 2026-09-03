@@ -239,19 +239,27 @@ def test_group_add_auto_creates_the_member_and_rolls_up_hours(tmp_path):
         assert db.get_total_hours("Machine Learning") == 5.0
 
 
-def test_group_add_to_unknown_group_errors(tmp_path):
+def test_group_add_auto_creates_an_unknown_group(tmp_path):
     db_path = tmp_path / "data.db"
-    result = _run("group", "add", "Not A Group", "Python", db_path=db_path)
-    assert result.exit_code == 1
-    assert "not a group" in result.output
+    result = _run("group", "add", "Machine Learning", "Python", db_path=db_path)
+    assert result.exit_code == 0
+
+    with Database(db_path) as db:
+        assert db.get_skill("Machine Learning") is not None
+        assert [s.name for s in db.get_group_members("Machine Learning")] == ["Python"]
 
 
-def test_group_add_rejects_nested_group(tmp_path):
+def test_group_add_allows_nesting_a_group_inside_a_group(tmp_path):
     db_path = tmp_path / "data.db"
     _run("group", "create", "Machine Learning", db_path=db_path)
-    _run("group", "create", "Programming", db_path=db_path)
-    result = _run("group", "add", "Machine Learning", "Programming", db_path=db_path)
-    assert result.exit_code == 1
+    _run("group", "create", "Deep Learning", db_path=db_path)
+    _run("group", "add", "Deep Learning", "PyTorch", db_path=db_path)
+    result = _run("group", "add", "Machine Learning", "Deep Learning", db_path=db_path)
+    assert result.exit_code == 0
+
+    _run("log", "PyTorch", "--time", "4h", db_path=db_path)
+    with Database(db_path) as db:
+        assert db.get_total_hours("Machine Learning") == 4.0
 
 
 def test_group_remove_ungroups_the_skill(tmp_path):
@@ -297,29 +305,31 @@ def test_group_rename_success(tmp_path):
 
     result = _run("group", "rename", "Machine Learning", "ML", db_path=db_path)
     assert result.exit_code == 0
-    assert "Renamed group" in result.output
+    assert "Renamed" in result.output
 
     with Database(db_path) as db:
         assert db.get_skill("Machine Learning") is None
         renamed = db.get_skill("ML")
         assert renamed is not None
-        assert renamed.is_group is True
         assert db.get_total_hours("ML") == 3.0  # rollup survives the rename
 
 
-def test_group_rename_rejects_non_group_target(tmp_path):
+def test_group_rename_also_works_on_a_plain_skill(tmp_path):
+    # `group rename` is the same operation as `skill rename` now — every
+    # skill can be a group, so there's no "must already be a group" gate.
     db_path = tmp_path / "data.db"
     _run("log", "Coding", "--time", "1h", db_path=db_path)
     result = _run("group", "rename", "Coding", "Programming", db_path=db_path)
-    assert result.exit_code == 1
-    assert "not a group" in result.output
+    assert result.exit_code == 0
+    with Database(db_path) as db:
+        assert db.get_skill("Programming") is not None
 
 
 def test_group_rename_unknown_group_errors(tmp_path):
     db_path = tmp_path / "data.db"
     result = _run("group", "rename", "Nope", "Something", db_path=db_path)
     assert result.exit_code == 1
-    assert "not a group" in result.output
+    assert "No skill named" in result.output
 
 
 def test_group_rename_to_existing_name_errors(tmp_path):
@@ -332,8 +342,11 @@ def test_group_rename_to_existing_name_errors(tmp_path):
 
 
 def test_group_rename_shows_up_in_group_list_afterward(tmp_path):
+    # A group only "counts" for `group list` once it has a member — an
+    # empty group renamed is still an empty group, so give it one first.
     db_path = tmp_path / "data.db"
     _run("group", "create", "Machine Learning", db_path=db_path)
+    _run("group", "add", "Machine Learning", "Python", db_path=db_path)
     _run("group", "rename", "Machine Learning", "ML", db_path=db_path)
     result = _run("group", "list", db_path=db_path)
     assert "ML" in result.output
@@ -350,12 +363,21 @@ def test_cd_into_a_group_succeeds(tmp_path):
     assert "Now focused" in result.output
 
 
-def test_cd_into_non_group_errors(tmp_path):
+def test_cd_into_any_existing_skill_succeeds(tmp_path):
+    # cd no longer requires the target to already have members — every
+    # skill can become a group, so you can cd into one before it has any.
     db_path = tmp_path / "data.db"
     _run("log", "Python", "--time", "1h", db_path=db_path)
     result = _run("cd", "Python", db_path=db_path)
+    assert result.exit_code == 0
+    assert "Now focused" in result.output
+
+
+def test_cd_into_unknown_skill_errors(tmp_path):
+    db_path = tmp_path / "data.db"
+    result = _run("cd", "Nope", db_path=db_path)
     assert result.exit_code == 1
-    assert "not a group" in result.output
+    assert "No skill named" in result.output
 
 
 def test_cd_with_no_args_goes_back_to_top_level(tmp_path):
@@ -383,14 +405,31 @@ def test_list_at_top_level_shows_group_members_nested(tmp_path):
     assert "5.0h" in result.output
 
 
-def test_list_at_top_level_shows_empty_group_placeholder(tmp_path):
+def test_list_at_top_level_shows_empty_group_like_any_other_skill(tmp_path):
+    # An empty group has no members yet, so it isn't "a group" in any
+    # visible way until something is nested under it — it just shows up
+    # as a normal 0h row, same as any freshly-created skill would.
     db_path = tmp_path / "data.db"
     _run("group", "create", "Machine Learning", db_path=db_path)
     _run("log", "Guitar", "--time", "1h", db_path=db_path)
 
     result = _run("list", db_path=db_path)
     assert "Machine Learning" in result.output
-    assert "no members yet" in result.output
+    assert "no members yet" not in result.output
+
+
+def test_list_at_top_level_nests_groups_inside_groups(tmp_path):
+    db_path = tmp_path / "data.db"
+    _run("group", "create", "Machine Learning", db_path=db_path)
+    _run("group", "add", "Machine Learning", "Deep Learning", db_path=db_path)
+    _run("group", "add", "Deep Learning", "PyTorch", db_path=db_path)
+    _run("log", "PyTorch", "--time", "4h", db_path=db_path)
+
+    result = _run("list", db_path=db_path)
+    assert "Machine Learning" in result.output
+    assert "Deep Learning" in result.output
+    assert "PyTorch" in result.output
+    assert "4.0h" in result.output  # rolled all the way up to Machine Learning
 
 
 def test_list_after_cd_shows_group_members(tmp_path):
@@ -403,7 +442,7 @@ def test_list_after_cd_shows_group_members(tmp_path):
     result = _run("list", db_path=db_path)
     assert "Python" in result.output
     assert "Maths" in result.output
-    assert "Inside group" in result.output
+    assert "Inside" in result.output
 
 
 def test_list_falls_back_gracefully_if_cd_group_was_deleted(tmp_path):
