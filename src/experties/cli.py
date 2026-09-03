@@ -269,7 +269,7 @@ class _CommandInfo:
 
 
 _COMMAND_REFERENCE: list[_CommandInfo] = [
-    _CommandInfo("list", "Show every skill, its rank, hours, and progress to the next rank.", "experties list"),
+    _CommandInfo("list", "Show every skill, its rank, hours, and progress. Any skill with members shows them nested underneath, at any depth.", "experties list"),
     _CommandInfo("start", "Run a live focus-session timer for a skill (blocks the terminal).", "experties start Coding"),
     _CommandInfo("log", "Manually log time spent on a skill.", 'experties log Coding --time 1h30m --note "fixed a bug"'),
     _CommandInfo("timer start", "Start a background timer — start several at once for different skills.", "experties timer start Coding"),

@@ -2,285 +2,168 @@
 
 All data lives locally in `~/.experties/data.db` (override with the
 `EXPERTIES_DB_PATH` environment variable — mainly useful for testing).
+Plugins load from `~/.experties/plugins` (override with
+`EXPERTIES_PLUGINS_DIR`).
 
 For a quick in-terminal summary, run `experties commands`. This file has
 the full detail, including every option. `experties --help` (and
 `experties <command> --help`) is always the live, authoritative list —
 it's the only place that will show plugin-added commands too.
 
+Looking for just the handful of commands you'll actually type every
+day? See [`CHEATSHEET.md`](./CHEATSHEET.md) instead.
+
 ## Quick reference
 
 | Command | What it does |
 |---|---|
-| `experties list` | Show every skill, rank, hours, and progress |
-| `experties start <skill>` | Run the live focus-session timer |
+| `experties list` | Show every skill, rank, hours, and progress — nested groups shown underneath, at any depth |
+| `experties cd <skill>` | Focus `list` on one skill's subtree, like cd into a folder |
+| `experties start <skill>` | Run the live focus-session timer (blocks the terminal) |
 | `experties log <skill> --time <duration>` | Manually log time |
+| `experties timer start <skill>` | Start a background timer — start several at once |
+| `experties timer stop <skill>` | Stop a background timer and log the time |
+| `experties timer status` | Show every timer currently running |
+| `experties timer cancel <skill>` | Abandon a running background timer without logging anything |
 | `experties stats <skill>` | Show rank progress + recent sessions |
 | `experties rank-table` | Show the full rank ladder |
 | `experties delete <id>` | Delete a single logged session |
 | `experties skill rename <old> <new>` | Rename a skill (keeps its history) |
-| `experties skill delete <skill>` | Delete a skill and all its sessions |
-| `experties group create <name>` | Create a group ("super skill") |
-| `experties group add <group> <skill>` | Add a skill as a member of a group |
-| `experties group remove <skill>` | Remove a skill from its group |
-| `experties group rename <old> <new>` | Rename a group (history moves with it) |
-| `experties group list` | Show every group, its hours, and its members |
-| `experties cd <group>` | Focus `list` on one group, like cd into a folder |
+| `experties skill delete <skill>` | Delete a skill and its own sessions (members become top-level) |
+| `experties group create <name>` | Create an empty skill, ready to nest things under |
+| `experties group add <group> <skill>` | Nest a skill under another — both auto-created if new |
+| `experties group remove <skill>` | Remove a skill from its parent |
+| `experties group rename <old> <new>` | Rename a skill (same as `skill rename`) |
+| `experties group list` | Show every skill that currently has members |
 | `experties commands` | Quick in-terminal command summary |
 | `experties plugins` | Show loaded plugins |
 
 ---
 
+## Skills and groups
+
+There's no separate "group" type — every skill can hold other skills as
+members. A skill becomes "a group" the moment something is nested under
+it, and stops being one the moment its last member leaves; nothing needs
+to be declared in advance. Nesting can go arbitrarily deep — a group can
+itself be a member of another group.
+
+A skill still has at most one parent, so its hours never roll up into
+two different totals at once. `experties group add "Machine Learning"
+"Deep Learning"` followed by `experties group add "Deep Learning"
+PyTorch` gives you a real tree: PyTorch's hours count toward Deep
+Learning's total, which in turn counts toward Machine Learning's.
+
+Both names in `group add` are created automatically if they don't exist
+yet — you don't need `group create` first unless you just want an empty
+placeholder to nest things into later.
+
 ## `experties list`
 
-Shows every skill you've logged time against: current rank, total hours,
-a progress bar toward the next rank, and how many hours are left to get
-there. A `GLOBAL` row at the bottom applies the same rank table to your
-hours summed across every skill.
+Shows every skill you've logged time against: current rank, total
+hours, a progress bar toward the next rank, and how many hours are left
+to get there. Any skill with members shows them indented directly
+underneath its row, however deep the nesting goes — no need to `cd` in
+just to see what's inside a group. A `GLOBAL` row at the bottom applies
+the same rank table to your hours summed across everything.
 
-If you've `cd`'d into a group, this shows that group's members instead
-— see the Groups section below.
+If you've `cd`'d into a skill, this shows that skill's subtree instead
+of the whole top level.
 
-```bash
-experties list
-```
+## `experties cd`
 
-No options. If you haven't logged anything yet, it tells you to run
-`experties log` or `experties start` instead of showing an empty table.
+Focuses `list` on one skill's subtree, like `cd` into a folder — it
+doesn't affect `log`, `start`, `timer`, or `stats`, which always take an
+exact skill name regardless of where you've `cd`'d. Works on any
+existing skill, including one with no members yet. Run `experties cd`
+with no argument (or `..`) to go back to the top level.
 
----
+## `experties start`
 
-## `experties start <skill>`
+Runs a live, full-screen timer with a countdown, pause/resume
+(`space`), and stop-and-save (`s`) or cancel (`c`). Blocks the terminal
+for as long as it's running — it's meant for one focused session at a
+time. Auto-pauses if your Mac sleeps mid-session, and asks whether to
+resume when it wakes. Closing the terminal window mid-session stops it
+entirely with nothing logged — there's no background daemon, so commit
+or lose it.
 
-Runs a live, interactive stopwatch for a skill. This is the main way to
-track a focus session as it happens.
+## `experties log`
 
-```bash
-experties start Coding
-```
+Manually logs a duration after the fact — `--time` accepts `1h30m`,
+`1.5h`, or `90m`. No real start/stop moment is recorded for these, so
+this time never gets deduped against anything else (see Timers below);
+it always just adds on top.
 
-**While it's running:**
+## Timers (`experties timer ...`)
 
-| Key | Action |
-|---|---|
-| `space` | Pause / resume |
-| `s` | Stop and save |
-| `c` | Cancel — discard the session, nothing is logged |
+Background timers, separate from `experties start` — they return
+immediately instead of taking over the terminal, so you can run several
+at once for different skills:
 
-If your Mac goes to sleep mid-session, the timer detects the gap, pauses
-automatically, and shows "PAUSED — Mac was asleep." It will **not**
-resume on its own — you have to press `space` again once you're back.
-Closing the terminal window instead of pressing `s` ends the session
-with nothing saved; there's no background process keeping it alive.
+- `experties timer start <skill>` — starts tracking; errors if one's
+  already running for that skill
+- `experties timer stop <skill>` — ends it, asks for an optional note,
+  logs the real time interval
+- `experties timer status` — lists everything currently running, with
+  live elapsed time
+- `experties timer cancel <skill>` — abandons a running timer, logs
+  nothing
 
-When you stop with `s`, you'll be prompted for an optional note before
-it's committed — press Enter to skip.
+**Overlapping time only counts once.** If you run two timers at the
+same time — say, for two skills in the same group, or just two things
+you're doing together — each skill's own total still reflects its own
+full duration. But any shared rollup (GLOBAL, or a group both skills
+belong to) counts the overlapping stretch once, not once per skill,
+since only one hour of your life actually passed. Manually logged time
+(`experties log --time`) has no real interval on record, so it's never
+part of this — it always adds normally.
 
----
+## `experties stats`
 
-## `experties log <skill> --time <duration> [--note TEXT]`
-
-Manually logs a chunk of time without running the live timer — useful
-for a session you tracked some other way, or forgot to start on time.
-
-```bash
-experties log Coding --time 1h30m --note "fixed a nasty bug"
-experties log Guitar --time 45m
-experties log Mathematics --time 2h
-```
-
-| Option | Required | Description |
-|---|---|---|
-| `--time`, `-t` | Yes | Duration — accepts `1h30m`, `1.5h`, `90m`, or a bare number like `1.5` (assumed hours) |
-| `--note` | No | A short note about the session |
-
-The skill is created automatically the first time you log time against a
-new name — no separate "create skill" step needed.
-
----
-
-## `experties stats <skill> [--limit N]`
-
-Shows current rank and progress for one skill, plus a table of its most
-recent sessions (with their IDs — useful for `experties delete`).
-
-For a group, sessions from every member are merged into this view (plus
-any hours logged directly to the group itself), sorted together by
-recency, with an extra "Skill" column so you can tell which session came
-from which member.
-
-```bash
-experties stats Coding
-experties stats Coding --limit 25
-experties stats "Machine Learning"
-```
-
-| Option | Default | Description |
-|---|---|---|
-| `--limit`, `-n` | 10 | How many recent sessions to show |
-
----
+Shows rank progress and recent session history for one skill. If that
+skill has members (at any depth), sessions show which skill in the
+subtree they actually came from.
 
 ## `experties rank-table`
 
-Shows the full rank ladder — every tier and the hours required to reach
-it — with your current global rank highlighted.
+Shows the full rank ladder and the hours needed for each tier — the
+same table used for every skill and for GLOBAL.
 
-```bash
-experties rank-table
-```
+## `experties delete`
 
-No options.
+Deletes a single logged session by its id (find the id via `experties
+stats <skill>`). This only removes that one session, not the skill
+itself.
 
----
+## `experties skill rename` / `experties skill delete`
 
-## `experties delete <session_id> [--yes]`
+`skill rename` renames a skill in place — its members (if any) and
+rolled-up history move with it. `skill delete` permanently deletes a
+skill and every session logged *directly* against it; if it has
+members, they become top-level skills instead of being deleted. Both
+ask for confirmation unless you pass `--yes`/`-y`.
 
-Deletes a single logged session by its ID. Find the ID via
-`experties stats <skill>`. Deleting a session never deletes the skill
-itself — even if it was the skill's only session, the skill just drops
-back to 0 hours / Unranked rather than disappearing.
+## `experties group create` / `add` / `remove` / `rename` / `list`
 
-```bash
-experties delete 12
-experties delete 12 --yes   # skip the confirmation prompt
-```
+- `group create <name>` — creates an empty skill, ready to nest things
+  under. Optional; `group add` auto-creates both sides anyway.
+- `group add <group> <skill>` — nests `<skill>` under `<group>`. Either
+  can already have its own logged hours or its own members. Rejects
+  creating a loop (nesting something under its own descendant) and
+  rejects moving a skill that already belongs to a different group
+  (remove it first).
+- `group remove <skill>` — removes a skill from its current parent; it
+  becomes top-level again. Its own members, if any, stay attached to it.
+- `group rename <old> <new>` — identical to `skill rename`; kept under
+  `group` too since it reads more naturally when you're thinking of the
+  skill as a group.
+- `group list` — every skill that currently has at least one member, its
+  rolled-up hours, and those members. A skill you `group create`d but
+  haven't put anything into yet won't show up here until it does.
 
-| Option | Description |
-|---|---|
-| `--yes`, `-y` | Skip the "are you sure" prompt |
+## `experties commands` / `experties plugins`
 
----
-
-## `experties skill rename <old_name> <new_name>`
-
-Renames a skill. Its id and every session logged against it are
-unaffected — the full history moves to the new name. Works on groups
-too (it preserves the group flag), but `experties group rename` is the
-more discoverable, guarded way to do that specifically — see below.
-
-```bash
-experties skill rename Codnig Coding
-```
-
-Renaming to a name already used by a *different* skill fails. Renaming
-to the same name with different casing (`coding` → `Coding`) is fine.
-
----
-
-## `experties skill delete <skill> [--yes]`
-
-Deletes a skill **and every session ever logged against it.** Unlike
-`experties delete <id>`, which only removes one session and leaves the
-skill in place, this takes the skill's entire history with it. There is
-no undo — back up `~/.experties/data.db` first if you're unsure.
-
-Deleting a *group* this way does **not** delete its members — they
-survive, just ungrouped.
-
-```bash
-experties skill delete Guitar
-experties skill delete Guitar --yes   # skip the confirmation prompt
-```
-
-It shows the skill's total hours and session count before asking you to
-confirm.
-
----
-
-## Groups — "super skills"
-
-A group is a skill that other skills can belong to. Its hours are the
-sum of its own direct sessions (if any) plus every member's hours —
-automatically, everywhere: `list`, `stats`, and its rank all reflect
-the rolled-up total with no extra steps.
-
-```bash
-experties group create "Machine Learning"
-experties group add "Machine Learning" Python
-experties group add "Machine Learning" Maths
-experties log Python --time 3h
-experties log Maths --time 2h
-experties list   # "Machine Learning" shows 5h total
-```
-
-A skill belongs to at most one group. Groups can't be nested (a group's
-members must be regular skills, not other groups). `experties delete
-<skill>`/`log`/`start`/`stats` all still work on a group's individual
-members exactly as before — grouping only changes how the *group's own*
-total is calculated and how `list` displays things; it never merges the
-members' identities together. Deleting a group (`experties skill
-delete`) does not delete its members, just ungroups them.
-
-### `experties group create <name>`
-Creates a new, empty group.
-
-### `experties group add <group> <skill>`
-Adds a skill to a group. The skill is created automatically if it
-doesn't exist yet. A skill already in a different group must be
-removed from that one first (`experties group remove`).
-
-### `experties group remove <skill>`
-Removes a skill from its group. The skill and its history are
-untouched — only the grouping is undone.
-
-### `experties group rename <old_name> <new_name>`
-Renames a group. Its members and rolled-up history move with it.
-Rejects the name if it doesn't belong to an actual group — use
-`experties skill rename` instead if you genuinely want to rename a
-regular (non-group) skill.
-
-```bash
-experties group rename "Machine Learning" ML
-```
-
-### `experties group list`
-Shows every group: rolled-up hours, rank, and its members.
-
----
-
-## `experties cd <group>`
-
-Focuses `experties list` on one group's members — like `cd` into a
-folder. Run with no argument (or `experties cd ..`) to go back to
-showing everything.
-
-```bash
-experties cd "Machine Learning"
-experties list      # now shows Python and Maths individually
-experties cd
-experties list      # back to showing "Machine Learning" rolled up
-```
-
-This only changes what `list` *displays*. `log`, `start`, `stats`, and
-`delete` always take an exact skill name and work identically whether
-or not you're "inside" a group — skill names are globally unique, so
-there's never any ambiguity about which skill a command means.
-
-If the group you `cd`'d into gets renamed or deleted, `list` notices
-and quietly falls back to the top level rather than getting stuck.
-
----
-
-## `experties commands`
-
-Prints a compact table of every built-in command with a one-line
-description and example — a quicker, terminal-native version of this
-file. It does not include any plugin-added commands; use
-`experties --help` for the complete list.
-
-```bash
-experties commands
-```
-
----
-
-## `experties plugins`
-
-Shows where your plugins directory is, and which `.py` files in it
-loaded successfully as commands. See [PLUGINS.md](PLUGINS.md) for how
-to write one.
-
-```bash
-experties plugins
-```
+`commands` prints this same reference, condensed, right in the
+terminal. `plugins` shows the plugins directory currently in use and
+which plugin files loaded successfully.
