@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from experties.database import Database, SkillAlreadyExistsError, SkillNotFoundError
@@ -543,15 +545,15 @@ def test_start_timer_rejects_starting_twice_for_the_same_skill(db):
 def test_start_timer_allows_two_different_skills_at_once(db):
     db.start_timer("Python")
     db.start_timer("Maths")
-    running = {s.name for s, _ in db.list_active_timers()}
+    running = {info.skill.name for info in db.list_active_timers()}
     assert running == {"Python", "Maths"}
 
 
 def test_stop_timer_logs_a_positive_duration_and_clears_the_active_timer(db):
     db.start_timer("Python")
-    started_at, ended_at, hours = db.stop_timer("Python")
+    started_at, hours = db.stop_timer("Python")
     assert hours > 0
-    assert started_at is not None and ended_at is not None
+    assert started_at is not None
     assert db.get_active_timer("Python") is None
 
 
@@ -574,3 +576,69 @@ def test_cancel_timer_rejects_when_nothing_is_running(db):
 
 def test_list_active_timers_empty_when_none_running(db):
     assert db.list_active_timers() == []
+
+
+def test_pause_timer_stops_accumulating_elapsed_time(db):
+    db.start_timer("Python")
+    time.sleep(0.05)
+    db.pause_timer("Python")
+    paused_elapsed = db.list_active_timers()[0].elapsed_seconds
+    time.sleep(0.05)
+    still_paused_elapsed = db.list_active_timers()[0].elapsed_seconds
+    # No meaningful time should have accumulated while paused.
+    assert abs(still_paused_elapsed - paused_elapsed) < 0.02
+
+
+def test_resume_timer_starts_accumulating_again(db):
+    db.start_timer("Python")
+    db.pause_timer("Python")
+    time.sleep(0.05)
+    db.resume_timer("Python")
+    time.sleep(0.05)
+    info = db.list_active_timers()[0]
+    assert info.is_paused is False
+    assert info.elapsed_seconds > 0.03
+
+
+def test_pause_timer_is_idempotent(db):
+    db.start_timer("Python")
+    db.pause_timer("Python")
+    db.pause_timer("Python")  # should not raise, and should not double-subtract
+    assert db.list_active_timers()[0].is_paused is True
+
+
+def test_resume_timer_is_idempotent(db):
+    db.start_timer("Python")
+    db.resume_timer("Python")  # already running — should not raise
+    assert db.list_active_timers()[0].is_paused is False
+
+
+def test_pause_timer_rejects_when_nothing_is_running(db):
+    with pytest.raises(ValueError):
+        db.pause_timer("Python")
+
+
+def test_resume_timer_rejects_when_nothing_is_running(db):
+    with pytest.raises(ValueError):
+        db.resume_timer("Python")
+
+
+def test_stop_timer_excludes_paused_time_from_logged_hours(db):
+    db.start_timer("Python")
+    time.sleep(0.05)
+    db.pause_timer("Python")
+    time.sleep(0.15)  # this stretch should NOT count
+    db.resume_timer("Python")
+    time.sleep(0.05)
+    started_at, hours = db.stop_timer("Python")
+    # ~0.1s of real active time, not the ~0.25s of total wall-clock time.
+    assert hours * 3600 < 0.2
+
+
+def test_list_active_timers_reports_paused_state(db):
+    db.start_timer("Python")
+    db.start_timer("Maths")
+    db.pause_timer("Python")
+    by_name = {info.skill.name: info for info in db.list_active_timers()}
+    assert by_name["Python"].is_paused is True
+    assert by_name["Maths"].is_paused is False

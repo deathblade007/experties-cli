@@ -69,9 +69,15 @@ CREATE TABLE IF NOT EXISTS skill_groups (
 -- A skill can have at most one timer running at once (skill_id is the
 -- primary key). Rows here are transient — `timer stop` deletes the row
 -- and turns it into a real session; `timer cancel` just deletes it.
+-- started_at never changes once set. accumulated_seconds banks the
+-- active time from every running stretch completed so far; resumed_at
+-- marks when the *current* stretch began, and is NULL while paused —
+-- current elapsed = accumulated_seconds + (now - resumed_at) if running.
 CREATE TABLE IF NOT EXISTS active_timers (
-    skill_id   INTEGER PRIMARY KEY REFERENCES skills(id) ON DELETE CASCADE,
-    started_at TEXT NOT NULL
+    skill_id            INTEGER PRIMARY KEY REFERENCES skills(id) ON DELETE CASCADE,
+    started_at          TEXT NOT NULL,
+    accumulated_seconds REAL NOT NULL DEFAULT 0,
+    resumed_at          TEXT
 );
 """
 
@@ -138,6 +144,14 @@ class Session:
     logged_at: str
 
 
+@dataclass(frozen=True)
+class ActiveTimerInfo:
+    skill: Skill
+    started_at: str
+    elapsed_seconds: float
+    is_paused: bool
+
+
 class SkillAlreadyExistsError(Exception):
     pass
 
@@ -176,12 +190,24 @@ class Database:
     def _init_schema(self) -> None:
         self._conn.executescript(_SCHEMA)
         self._migrate_add_ended_at_column()
+        self._migrate_add_timer_pause_columns()
         self._conn.commit()
 
     def _migrate_add_ended_at_column(self) -> None:
         columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(sessions)")}
         if "ended_at" not in columns:
             self._conn.execute("ALTER TABLE sessions ADD COLUMN ended_at TEXT")
+
+    def _migrate_add_timer_pause_columns(self) -> None:
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(active_timers)")}
+        if "accumulated_seconds" not in columns:
+            self._conn.execute("ALTER TABLE active_timers ADD COLUMN accumulated_seconds REAL NOT NULL DEFAULT 0")
+        if "resumed_at" not in columns:
+            self._conn.execute("ALTER TABLE active_timers ADD COLUMN resumed_at TEXT")
+            # Any timer that already existed under the old, pause-less
+            # schema was — by definition — running, so treat its current
+            # stretch as having begun at its original start moment.
+            self._conn.execute("UPDATE active_timers SET resumed_at = started_at WHERE resumed_at IS NULL")
 
     # -- skills --------------------------------------------------------
 
@@ -498,68 +524,116 @@ class Database:
         """Start a background timer for a skill. Returns started_at. Raises
         ValueError if one is already running for it."""
         skill = self.get_or_create_skill(skill_name)
-        existing = self._conn.execute(
-            "SELECT started_at FROM active_timers WHERE skill_id = ?", (skill.id,)
-        ).fetchone()
+        existing = self._timer_row(skill.id)
         if existing is not None:
             started_display = existing["started_at"].split(".")[0]
             raise ValueError(f'A timer for "{skill.name}" is already running (started {started_display}).')
         started_at = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
-            "INSERT INTO active_timers (skill_id, started_at) VALUES (?, ?)",
-            (skill.id, started_at),
+            "INSERT INTO active_timers (skill_id, started_at, accumulated_seconds, resumed_at) VALUES (?, ?, 0, ?)",
+            (skill.id, started_at, started_at),
         )
         self._conn.commit()
         return started_at
+
+    def _timer_row(self, skill_id: int) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM active_timers WHERE skill_id = ?", (skill_id,)
+        ).fetchone()
+
+    def _elapsed_seconds(self, row: sqlite3.Row) -> float:
+        elapsed = row["accumulated_seconds"]
+        if row["resumed_at"] is not None:
+            elapsed += (datetime.now(timezone.utc) - _parse_iso(row["resumed_at"])).total_seconds()
+        return elapsed
 
     def get_active_timer(self, skill_name: str) -> str | None:
         """started_at if a timer is currently running for this skill, else None."""
         skill = self.get_skill(skill_name)
         if skill is None:
             return None
-        row = self._conn.execute(
-            "SELECT started_at FROM active_timers WHERE skill_id = ?", (skill.id,)
-        ).fetchone()
+        row = self._timer_row(skill.id)
         return row["started_at"] if row else None
 
-    def list_active_timers(self) -> list[tuple[Skill, str]]:
-        """(skill, started_at) for every currently-running timer, oldest first."""
+    def list_active_timers(self) -> list["ActiveTimerInfo"]:
+        """Every currently-running (or paused) timer, oldest first."""
         rows = self._conn.execute(
-            """SELECT skills.*, active_timers.started_at AS timer_started_at
+            """SELECT skills.*, active_timers.started_at AS timer_started_at,
+                      active_timers.accumulated_seconds AS timer_accumulated_seconds,
+                      active_timers.resumed_at AS timer_resumed_at
                FROM active_timers
                JOIN skills ON skills.id = active_timers.skill_id
                ORDER BY active_timers.started_at ASC"""
         ).fetchall()
-        return [(_row_to_skill(r), r["timer_started_at"]) for r in rows]
+        result = []
+        for r in rows:
+            elapsed = r["timer_accumulated_seconds"]
+            if r["timer_resumed_at"] is not None:
+                elapsed += (datetime.now(timezone.utc) - _parse_iso(r["timer_resumed_at"])).total_seconds()
+            result.append(
+                ActiveTimerInfo(
+                    skill=_row_to_skill(r),
+                    started_at=r["timer_started_at"],
+                    elapsed_seconds=elapsed,
+                    is_paused=r["timer_resumed_at"] is None,
+                )
+            )
+        return result
 
-    def stop_timer(self, skill_name: str) -> tuple[str, str, float]:
+    def pause_timer(self, skill_name: str) -> None:
+        """Pause a running background timer. No-op if it's already paused."""
+        skill = self.get_skill(skill_name)
+        row = self._timer_row(skill.id) if skill is not None else None
+        if row is None:
+            raise ValueError(f'No timer is running for "{skill_name}".')
+        if row["resumed_at"] is None:
+            return
+        accumulated = row["accumulated_seconds"] + (
+            datetime.now(timezone.utc) - _parse_iso(row["resumed_at"])
+        ).total_seconds()
+        self._conn.execute(
+            "UPDATE active_timers SET accumulated_seconds = ?, resumed_at = NULL WHERE skill_id = ?",
+            (accumulated, skill.id),
+        )
+        self._conn.commit()
+
+    def resume_timer(self, skill_name: str) -> None:
+        """Resume a paused background timer. No-op if it's already running."""
+        skill = self.get_skill(skill_name)
+        row = self._timer_row(skill.id) if skill is not None else None
+        if row is None:
+            raise ValueError(f'No timer is running for "{skill_name}".')
+        if row["resumed_at"] is not None:
+            return
+        self._conn.execute(
+            "UPDATE active_timers SET resumed_at = ? WHERE skill_id = ?",
+            (datetime.now(timezone.utc).isoformat(), skill.id),
+        )
+        self._conn.commit()
+
+    def stop_timer(self, skill_name: str) -> tuple[str, float]:
         """
-        Stop a running background timer. Returns (started_at, ended_at,
+        Stop a running (or paused) background timer. Returns (started_at,
         hours) for the caller to log as a session (kept separate from
         logging so the CLI can prompt for a note in between). Raises
         ValueError if no timer is running for this skill.
         """
-        started_at = self.get_active_timer(skill_name)
-        if started_at is None:
-            raise ValueError(f'No timer is running for "{skill_name}".')
         skill = self.get_skill(skill_name)
-        # started_at was stored floored to the second, so it's always <=
-        # the true start instant — comparing it against a full-precision
-        # "now" (rather than a second-truncated one) keeps hours strictly
-        # positive even when start and stop land in the same second.
-        ended_dt = datetime.now(timezone.utc)
-        hours = (ended_dt - _parse_iso(started_at)).total_seconds() / 3600
-        ended_at = ended_dt.isoformat()
+        row = self._timer_row(skill.id) if skill is not None else None
+        if row is None:
+            raise ValueError(f'No timer is running for "{skill_name}".')
+        hours = self._elapsed_seconds(row) / 3600
+        started_at = row["started_at"]
         self._conn.execute("DELETE FROM active_timers WHERE skill_id = ?", (skill.id,))
         self._conn.commit()
-        return started_at, ended_at, hours
+        return started_at, hours
 
     def cancel_timer(self, skill_name: str) -> None:
         """Abandon a running background timer without logging anything."""
-        started_at = self.get_active_timer(skill_name)
-        if started_at is None:
-            raise ValueError(f'No timer is running for "{skill_name}".')
         skill = self.get_skill(skill_name)
+        row = self._timer_row(skill.id) if skill is not None else None
+        if row is None:
+            raise ValueError(f'No timer is running for "{skill_name}".')
         self._conn.execute("DELETE FROM active_timers WHERE skill_id = ?", (skill.id,))
         self._conn.commit()
 

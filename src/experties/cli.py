@@ -19,7 +19,7 @@ from experties.duration import parse_duration
 from experties.notifications import notify_all_level_ups
 from experties.plugins import DEFAULT_PLUGINS_DIR, load_plugins
 from experties.rank_engine import RANK_TABLE, crossed_rank_up, get_rank_status
-from experties.timer import run_timer
+from experties.timer import format_hms, run_multi_timer_watch, run_timer
 
 app = typer.Typer(
     name="experties",
@@ -275,6 +275,7 @@ _COMMAND_REFERENCE: list[_CommandInfo] = [
     _CommandInfo("timer start", "Start a background timer — start several at once for different skills.", "experties timer start Coding"),
     _CommandInfo("timer stop", "Stop a background timer and log the time (overlaps with another timer count once in shared totals).", "experties timer stop Coding"),
     _CommandInfo("timer status", "Show every timer currently running.", "experties timer status"),
+    _CommandInfo("timer watch", "Live dialog over every running timer — pause/stop/cancel each one individually.", "experties timer watch"),
     _CommandInfo("timer cancel", "Abandon a running background timer without logging anything.", "experties timer cancel Coding"),
     _CommandInfo("stats", "Show rank progress and recent session history for one skill.", "experties stats Coding"),
     _CommandInfo("rank-table", "Show the full rank ladder and required hours per tier.", "experties rank-table"),
@@ -496,7 +497,7 @@ def timer_stop(skill: str = typer.Argument(..., help="Skill with a running timer
     """Stop a background timer and log the time. If it overlapped with another timer you ran at the same time, the overlap only counts once in any shared total (like GLOBAL, or a group both skills belong to)."""
     with Database() as db:
         try:
-            started_at, ended_at, hours = db.stop_timer(skill)
+            started_at, hours = db.stop_timer(skill)
         except ValueError as e:
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(code=1)
@@ -520,7 +521,7 @@ def timer_cancel(skill: str = typer.Argument(..., help="Skill with a running tim
 
 @timer_app.command("status")
 def timer_status() -> None:
-    """Show every timer currently running, and how long each has been going."""
+    """Show every timer currently running (or paused), and how long each has actually been active."""
     with Database() as db:
         active = db.list_active_timers()
 
@@ -528,19 +529,30 @@ def timer_status() -> None:
         console.print("[dim]No timers running.[/dim] Start one with [bold]experties timer start <skill>[/bold].")
         return
 
-    now = datetime.now(timezone.utc)
     table = Table(title="Running Timers")
     table.add_column("Skill", style="bold")
     table.add_column("Started")
     table.add_column("Elapsed", justify="right")
-    for skill, started_at in active:
-        elapsed = now - datetime.fromisoformat(started_at)
-        total_seconds = max(0, int(elapsed.total_seconds()))
-        h, remainder = divmod(total_seconds, 3600)
-        m, s = divmod(remainder, 60)
-        table.add_row(skill.name, _format_clock_time(started_at), f"{h:02d}:{m:02d}:{s:02d}")
+    table.add_column("Status")
+    for info in active:
+        table.add_row(
+            info.skill.name,
+            _format_clock_time(info.started_at),
+            format_hms(info.elapsed_seconds),
+            "[yellow]\u23f8 paused[/yellow]" if info.is_paused else "[green]\u25cf running[/green]",
+        )
 
     console.print(table)
+    console.print(
+        '[dim]Run [bold]experties timer watch[/bold] to see these live and pause/stop them individually.[/dim]'
+    )
+
+
+@timer_app.command("watch")
+def timer_watch() -> None:
+    """Open a live dialog over every currently-running background timer — pause, resume, stop, or cancel each one individually, just like `experties start`'s dialog but for as many as you've got going at once."""
+    with Database() as db:
+        run_multi_timer_watch(db, _commit_and_report)
 
 
 app.add_typer(timer_app, name="timer")
