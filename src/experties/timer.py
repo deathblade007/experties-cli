@@ -14,17 +14,16 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Callable
 
-from rich.console import Console, Group
+from rich.console import Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
 from experties.database import ActiveTimerInfo, Database
+from experties.theme import console
 
 TICK_SECONDS = 1.0
 SLEEP_GAP_THRESHOLD = 10.0
-
-console = Console()
 
 
 class TimerState(Enum):
@@ -119,24 +118,26 @@ class _RawKeyReader:
 
 
 def _render(skill_name: str, elapsed: float, state: TimerState, message: str) -> Panel:
-    clock_style = "bold cyan" if state == TimerState.RUNNING else "bold yellow"
+    clock_style = "accent" if state == TimerState.RUNNING else "warning"
     body = Text()
     body.append(f"{skill_name}\n\n", style="bold")
     body.append(f"{format_hms(elapsed)}\n", style=clock_style)
 
     if state == TimerState.RUNNING:
-        status = "[green]\u25cf RUNNING[/green]"
+        status = "[success]\u25cf RUNNING[/success]"
     elif state == TimerState.SLEEP_PAUSED:
-        status = "[yellow]\u23f8 PAUSED \u2014 Mac was asleep[/yellow]"
+        status = "[warning]\u23f8 PAUSED \u2014 Mac was asleep[/warning]"
     else:
-        status = "[yellow]\u23f8 PAUSED[/yellow]"
+        status = "[warning]\u23f8 PAUSED[/warning]"
 
     lines = [Text.from_markup(status)]
     if message:
-        lines.append(Text.from_markup(f"[yellow]{message}[/yellow]"))
-    lines.append(Text.from_markup("[dim][space] pause/resume   [s] stop & save   [c] cancel[/dim]"))
+        lines.append(Text.from_markup(f"[warning]{message}[/warning]"))
+    lines.append(Text.from_markup("[muted][space] pause/resume   [s] stop & save   [c] cancel[/muted]"))
 
-    return Panel(Group(body, *lines), title="Experties Timer", expand=False)
+    return Panel(
+        Group(body, *lines), title="Experties Timer", title_style="brand", border_style="accent", expand=False
+    )
 
 
 def run_timer(skill_name: str) -> TimerResult:
@@ -178,30 +179,30 @@ def _render_multi(slots: list[_MultiSlot], selected: int, message: str) -> Group
     panels = []
     for i, slot in enumerate(slots):
         is_selected = i == selected
-        clock_style = "bold cyan" if slot.state == TimerState.RUNNING else "bold yellow"
+        clock_style = "accent" if slot.state == TimerState.RUNNING else "warning"
         body = Text()
         body.append(f"{format_hms(slot.elapsed)}\n", style=clock_style)
 
         if slot.state == TimerState.RUNNING:
-            status = "[green]\u25cf RUNNING[/green]"
+            status = "[success]\u25cf RUNNING[/success]"
         elif slot.state == TimerState.SLEEP_PAUSED:
-            status = "[yellow]\u23f8 PAUSED \u2014 Mac was asleep[/yellow]"
+            status = "[warning]\u23f8 PAUSED \u2014 Mac was asleep[/warning]"
         else:
-            status = "[yellow]\u23f8 PAUSED[/yellow]"
+            status = "[warning]\u23f8 PAUSED[/warning]"
 
         title = f"\u25b8 {slot.skill_name}" if is_selected else f"  {slot.skill_name}"
-        border_style = "bold cyan" if is_selected else "dim"
+        border_style = "accent" if is_selected else "muted"
         panels.append(
             Panel(Group(body, Text.from_markup(status)), title=title, border_style=border_style, expand=False)
         )
 
     footer = []
     if message:
-        footer.append(Text.from_markup(f"[yellow]{message}[/yellow]"))
+        footer.append(Text.from_markup(f"[warning]{message}[/warning]"))
     footer.append(
         Text.from_markup(
-            "[dim][\u2191/\u2193] select   [space] pause/resume   [s] stop & save   "
-            "[c] cancel   [q] exit \u2014 keeps running[/dim]"
+            "[muted][\u2191/\u2193] select   [space] pause/resume   [s] stop & save   "
+            "[c] cancel   [q] exit \u2014 keeps running[/muted]"
         )
     )
     return Group(*panels, *footer)
@@ -223,7 +224,7 @@ def run_multi_timer_watch(
     """
     initial = db.list_active_timers()
     if not initial:
-        console.print("[dim]No timers running.[/dim] Start one with [bold]experties timer start <skill>[/bold].")
+        console.print("[muted]No timers running.[/muted] Start one with [bold]experties timer start <skill>[/bold].")
         return
 
     order = [info.skill.name for info in initial]
@@ -240,6 +241,28 @@ def run_multi_timer_watch(
 
     with _RawKeyReader() as reader:
         while order:
+            # Re-sync from the database every time we (re)enter the dialog
+            # -- not just once at the top -- so real wall-clock time that
+            # passed outside the tick loop (the note prompt after a stop,
+            # or another terminal touching one of these timers) is never
+            # silently missing from what's shown. The actual logged hours
+            # were never at risk either way -- stop_timer() always computes
+            # those fresh from the database, not from this display state --
+            # but the display should never lie about what's really running.
+            fresh_by_name = {info.skill.name: info for info in db.list_active_timers()}
+            for name in list(order):
+                if name not in fresh_by_name:
+                    # Stopped or cancelled elsewhere while this dialog was open.
+                    order.remove(name)
+                    slots.pop(name, None)
+                    continue
+                info = fresh_by_name[name]
+                slots[name].elapsed = info.elapsed_seconds
+                slots[name].state = TimerState.PAUSED if info.is_paused else TimerState.RUNNING
+
+            if not order:
+                break
+
             selected = max(0, min(selected, len(order) - 1))
             action: tuple[str, str | None] = ("", None)
 
@@ -304,7 +327,7 @@ def run_multi_timer_watch(
                 db.cancel_timer(name)
                 order.remove(name)
                 del slots[name]
-                console.print(f'[yellow]Timer for "{name}" cancelled \u2014 nothing logged.[/yellow]')
+                console.print(f'[warning]Timer for "{name}" cancelled \u2014 nothing logged.[/warning]')
             elif kind == "stop":
                 started_at, hours = db.stop_timer(name)
                 order.remove(name)
@@ -313,4 +336,4 @@ def run_multi_timer_watch(
                 commit_session(name, hours, note.strip() or None, started_at)
                 message = ""
 
-    console.print("[dim]No timers left running.[/dim]")
+    console.print("[muted]No timers left running.[/muted]")

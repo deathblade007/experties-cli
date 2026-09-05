@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Optional
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
 from experties.database import Database, SkillAlreadyExistsError, SkillNotFoundError, resolve_db_path
@@ -19,6 +18,7 @@ from experties.duration import parse_duration
 from experties.notifications import notify_all_level_ups
 from experties.plugins import DEFAULT_PLUGINS_DIR, load_plugins
 from experties.rank_engine import RANK_TABLE, crossed_rank_up, get_rank_status
+from experties.theme import console
 from experties.timer import format_hms, run_multi_timer_watch, run_timer
 
 app = typer.Typer(
@@ -26,7 +26,6 @@ app = typer.Typer(
     help="A local, terminal-driven skill mastery and rank-progression tracker.",
     add_completion=True,
 )
-console = Console()
 
 _BAR_WIDTH = 12
 
@@ -54,7 +53,7 @@ def _set_current_group(name: Optional[str]) -> None:
 
 def _progress_bar(fraction: float | None) -> str:
     if fraction is None:
-        return "[bold gold1]MAXED[/bold gold1]"
+        return "[rank_up]MAXED[/rank_up]"
     filled = round(fraction * _BAR_WIDTH)
     return "\u2588" * filled + "\u2591" * (_BAR_WIDTH - filled)
 
@@ -118,22 +117,22 @@ def list_skills() -> None:
         global_hours = db.get_global_total_hours()
 
     if group is not None:
-        console.print(f'[dim]Inside "{group.name}" — run [bold]experties cd[/bold] to go back[/dim]\n')
+        console.print(f'[muted]Inside "{group.name}" — run [bold]experties cd[/bold] to go back[/muted]\n')
 
     if not skills_with_hours and group is None:
         console.print(
-            "[yellow]No skills yet.[/yellow] Log your first session with "
+            "[warning]No skills yet.[/warning] Log your first session with "
             "[bold]experties log <skill> --time <duration>[/bold]."
         )
         return
     if not skills_with_hours and group is not None:
         console.print(
-            f'[yellow]"{group.name}" has no members yet.[/yellow] Add one with '
+            f'[warning]"{group.name}" has no members yet.[/warning] Add one with '
             f'[bold]experties group add "{group.name}" <skill>[/bold].'
         )
         return
 
-    table = Table(title=f'Experties — {group.name}' if group is not None else "Experties")
+    table = Table(title=f"Experties — {group.name}" if group is not None else "Experties", title_style="brand")
     table.add_column("Skill", style="bold")
     table.add_column("Rank")
     table.add_column("Hours", justify="right")
@@ -148,11 +147,11 @@ def list_skills() -> None:
         else:
             indent = "  " * depth
             table.add_row(
-                f"[dim]{indent}\u2514 {marker}{skill.name}[/dim]",
-                f"[dim]{rank_name}[/dim]",
-                f"[dim]{hours_display}[/dim]",
-                f"[dim]{progress}[/dim]",
-                f"[dim]{hours_left}[/dim]",
+                f"[muted]{indent}\u2514 {marker}{skill.name}[/muted]",
+                f"[muted]{rank_name}[/muted]",
+                f"[muted]{hours_display}[/muted]",
+                f"[muted]{progress}[/muted]",
+                f"[muted]{hours_left}[/muted]",
             )
 
     table.add_section()
@@ -175,18 +174,18 @@ def cd(
     """Focus `experties list` on one skill's subtree, like cd into a folder — doesn't affect log/start/stats, which always take an exact skill name."""
     if group is None or group in ("..", "/", "~"):
         _set_current_group(None)
-        console.print("[green]Back to the top level.[/green]")
+        console.print("[success]Back to the top level.[/success]")
         return
 
     with Database() as db:
         skill = db.get_skill(group)
 
     if skill is None:
-        console.print(f'[red]No skill named "{group}".[/red]')
+        console.print(f'[error]No skill named "{group}".[/error]')
         raise typer.Exit(code=1)
 
     _set_current_group(skill.name)
-    console.print(f'[green]Now focused on "{skill.name}".[/green] Run [bold]experties list[/bold] to see it.')
+    console.print(f'[success]Now focused on "{skill.name}".[/success] Run [bold]experties list[/bold] to see it.')
 
 
 @app.command()
@@ -198,7 +197,7 @@ def stats(
     with Database() as db:
         skill_obj = db.get_skill(skill)
         if skill_obj is None:
-            console.print(f'[red]No skill named "{skill}" yet.[/red]')
+            console.print(f'[error]No skill named "{skill}" yet.[/error]')
             raise typer.Exit(code=1)
 
         hours = db.get_total_hours(skill)
@@ -219,13 +218,13 @@ def stats(
             f"-> {status.next.name} ({status.hours_to_next:.1f}h to go)\n"
         )
     else:
-        console.print("[bold gold1]Top rank reached.[/bold gold1]\n")
+        console.print("[rank_up]Top rank reached.[/rank_up]\n")
 
     if not sessions:
-        console.print("[dim]No sessions logged yet.[/dim]")
+        console.print("[muted]No sessions logged yet.[/muted]")
         return
 
-    table = Table(title=f"Recent sessions ({len(sessions)})")
+    table = Table(title=f"Recent sessions ({len(sessions)})", title_style="brand")
     table.add_column("ID", justify="right")
     if is_group:
         table.add_column("Skill")
@@ -248,7 +247,7 @@ def rank_table() -> None:
         global_hours = db.get_global_total_hours()
     current_rank_name = get_rank_status(global_hours).current.name
 
-    table = Table(title="Rank Ladder")
+    table = Table(title="Rank Ladder", title_style="brand")
     table.add_column("Rank")
     table.add_column("Hours Required", justify="right")
 
@@ -296,19 +295,19 @@ _COMMAND_REFERENCE: list[_CommandInfo] = [
 @app.command()
 def commands() -> None:
     """List every built-in command with a short description and example."""
-    table = Table(title="Experties Commands")
+    table = Table(title="Experties Commands", title_style="brand")
     table.add_column("Command", style="bold")
     table.add_column("What it does")
-    table.add_column("Example", style="dim")
+    table.add_column("Example", style="muted")
 
     for cmd in _COMMAND_REFERENCE:
         table.add_row(cmd.name, cmd.description, cmd.example)
 
     console.print(table)
     console.print(
-        "\n[dim]Plugin commands you've added won't show up in this curated list — "
+        "\n[muted]Plugin commands you've added won't show up in this curated list — "
         "run [bold]experties --help[/bold] for the complete, live list including "
-        "plugins. See COMMANDS.md in the repo for full option details.[/dim]"
+        "plugins. See COMMANDS.md in the repo for full option details.[/muted]"
     )
 
 
@@ -331,11 +330,11 @@ def _commit_and_report(skill: str, hours: float, note: Optional[str], started_at
         db.log_session(skill, hours, note=note, started_at=started_at, ended_at=ended_at)
         hours_after = db.get_total_hours(skill)
 
-    console.print(f'[green]Logged {hours:.2f}h to "{skill}".[/green] Total: {hours_after:.1f}h')
+    console.print(f'[success]Logged {hours:.2f}h to "{skill}".[/success] Total: {hours_after:.1f}h')
 
     leveled_up = crossed_rank_up(hours_before, hours_after)
     for rank in leveled_up:
-        console.print(f"[bold gold1]LEVEL UP![/bold gold1] {skill} is now [bold]{rank.name}[/bold] \U0001F389")
+        console.print(f"[rank_up]LEVEL UP![/rank_up] {skill} is now [bold]{rank.name}[/bold] \U0001F389")
 
     notify_all_level_ups(skill, leveled_up)
 
@@ -350,7 +349,7 @@ def log(
     try:
         hours = parse_duration(time)
     except ValueError as e:
-        console.print(f"[red]{e}[/red]")
+        console.print(f"[error]{e}[/error]")
         raise typer.Exit(code=1)
 
     _commit_and_report(skill, hours, note)
@@ -364,7 +363,7 @@ def start(skill: str = typer.Argument(..., help="Skill name")) -> None:
     result = run_timer(skill)
 
     if result.cancelled or result.elapsed_seconds <= 0:
-        console.print("[yellow]Session cancelled — nothing logged.[/yellow]")
+        console.print("[warning]Session cancelled — nothing logged.[/warning]")
         raise typer.Exit(code=0)
 
     hours = result.elapsed_seconds / 3600
@@ -382,7 +381,7 @@ def delete(
     with Database() as db:
         session = db.get_session_by_id(session_id)
         if session is None:
-            console.print(f"[red]No session with id {session_id}.[/red]")
+            console.print(f"[error]No session with id {session_id}.[/error]")
             raise typer.Exit(code=1)
 
         skill = db.get_skill_by_id(session.skill_id)
@@ -399,7 +398,7 @@ def delete(
 
         db.delete_session(session_id)
 
-    console.print(f"[green]Deleted session #{session_id}.[/green]")
+    console.print(f"[success]Deleted session #{session_id}.[/success]")
 
 
 skill_app = typer.Typer(help="Manage skills themselves — renaming or deleting a skill entirely.")
@@ -415,13 +414,13 @@ def skill_rename(
         try:
             renamed = db.rename_skill(old_name, new_name)
         except SkillNotFoundError:
-            console.print(f'[red]No skill named "{old_name}".[/red]')
+            console.print(f'[error]No skill named "{old_name}".[/error]')
             raise typer.Exit(code=1)
         except SkillAlreadyExistsError:
-            console.print(f'[red]A skill named "{new_name}" already exists.[/red]')
+            console.print(f'[error]A skill named "{new_name}" already exists.[/error]')
             raise typer.Exit(code=1)
 
-    console.print(f'[green]Renamed "{old_name}" to "{renamed.name}".[/green]')
+    console.print(f'[success]Renamed "{old_name}" to "{renamed.name}".[/success]')
 
 
 @skill_app.command("delete")
@@ -433,7 +432,7 @@ def skill_delete(
     with Database() as db:
         skill = db.get_skill(name)
         if skill is None:
-            console.print(f'[red]No skill named "{name}".[/red]')
+            console.print(f'[error]No skill named "{name}".[/error]')
             raise typer.Exit(code=1)
 
         own_sessions = [s for s in db.get_sessions(name) if s.skill_id == skill.id]
@@ -441,14 +440,14 @@ def skill_delete(
         members = db.get_group_members(name)
 
         message = (
-            f'[yellow]This permanently deletes "{skill.name}" and its {len(own_sessions)} '
-            f"own session(s) ({own_hours:.1f}h). There's no undo.[/yellow]"
+            f'[warning]This permanently deletes "{skill.name}" and its {len(own_sessions)} '
+            f"own session(s) ({own_hours:.1f}h). There's no undo.[/warning]"
         )
         if members:
             member_names = ", ".join(m.name for m in members)
             message += (
-                f'\n[yellow]It has {len(members)} member(s) ({member_names}) — '
-                f"they'll become top-level skills, not deleted.[/yellow]"
+                f'\n[warning]It has {len(members)} member(s) ({member_names}) — '
+                f"they'll become top-level skills, not deleted.[/warning]"
             )
         console.print(message)
 
@@ -458,7 +457,7 @@ def skill_delete(
 
         db.delete_skill(name)
 
-    console.print(f'[green]Deleted "{name}".[/green]')
+    console.print(f'[success]Deleted "{name}".[/success]')
 
 
 app.add_typer(skill_app, name="skill")
@@ -483,11 +482,11 @@ def timer_start(skill: str = typer.Argument(..., help="Skill name — created au
         try:
             started_at = db.start_timer(skill)
         except ValueError as e:
-            console.print(f"[red]{e}[/red]")
+            console.print(f"[error]{e}[/error]")
             raise typer.Exit(code=1)
 
     console.print(
-        f'[green]Timer started for "{skill}"[/green] at {_format_clock_time(started_at)}. '
+        f'[success]Timer started for "{skill}"[/success] at {_format_clock_time(started_at)}. '
         f'Stop it with [bold]experties timer stop "{skill}"[/bold].'
     )
 
@@ -499,7 +498,7 @@ def timer_stop(skill: str = typer.Argument(..., help="Skill with a running timer
         try:
             started_at, hours = db.stop_timer(skill)
         except ValueError as e:
-            console.print(f"[red]{e}[/red]")
+            console.print(f"[error]{e}[/error]")
             raise typer.Exit(code=1)
 
     note = typer.prompt("Add a note? (press Enter to skip)", default="", show_default=False)
@@ -513,10 +512,10 @@ def timer_cancel(skill: str = typer.Argument(..., help="Skill with a running tim
         try:
             db.cancel_timer(skill)
         except ValueError as e:
-            console.print(f"[red]{e}[/red]")
+            console.print(f"[error]{e}[/error]")
             raise typer.Exit(code=1)
 
-    console.print(f'[yellow]Timer for "{skill}" cancelled — nothing logged.[/yellow]')
+    console.print(f'[warning]Timer for "{skill}" cancelled — nothing logged.[/warning]')
 
 
 @timer_app.command("status")
@@ -526,10 +525,10 @@ def timer_status() -> None:
         active = db.list_active_timers()
 
     if not active:
-        console.print("[dim]No timers running.[/dim] Start one with [bold]experties timer start <skill>[/bold].")
+        console.print("[muted]No timers running.[/muted] Start one with [bold]experties timer start <skill>[/bold].")
         return
 
-    table = Table(title="Running Timers")
+    table = Table(title="Running Timers", title_style="brand")
     table.add_column("Skill", style="bold")
     table.add_column("Started")
     table.add_column("Elapsed", justify="right")
@@ -539,12 +538,12 @@ def timer_status() -> None:
             info.skill.name,
             _format_clock_time(info.started_at),
             format_hms(info.elapsed_seconds),
-            "[yellow]\u23f8 paused[/yellow]" if info.is_paused else "[green]\u25cf running[/green]",
+            "[warning]\u23f8 paused[/warning]" if info.is_paused else "[success]\u25cf running[/success]",
         )
 
     console.print(table)
     console.print(
-        '[dim]Run [bold]experties timer watch[/bold] to see these live and pause/stop them individually.[/dim]'
+        '[muted]Run [bold]experties timer watch[/bold] to see these live and pause/stop them individually.[/muted]'
     )
 
 
@@ -568,10 +567,10 @@ def group_create(name: str = typer.Argument(..., help="Name for the new group"))
         try:
             db.create_group(name)
         except SkillAlreadyExistsError:
-            console.print(f'[red]A skill named "{name}" already exists.[/red]')
+            console.print(f'[error]A skill named "{name}" already exists.[/error]')
             raise typer.Exit(code=1)
 
-    console.print(f'[green]Created group "{name}".[/green] Add members with [bold]experties group add "{name}" <skill>[/bold].')
+    console.print(f'[success]Created group "{name}".[/success] Add members with [bold]experties group add "{name}" <skill>[/bold].')
 
 
 @group_app.command("add")
@@ -584,10 +583,10 @@ def group_add(
         try:
             member = db.add_to_group(group, skill)
         except (SkillNotFoundError, ValueError) as e:
-            console.print(f"[red]{e}[/red]")
+            console.print(f"[error]{e}[/error]")
             raise typer.Exit(code=1)
 
-    console.print(f'[green]Added "{member.name}" to "{group}".[/green]')
+    console.print(f'[success]Added "{member.name}" to "{group}".[/success]')
 
 
 @group_app.command("remove")
@@ -597,13 +596,13 @@ def group_remove(skill: str = typer.Argument(..., help="Skill to remove from its
         try:
             removed = db.remove_from_group(skill)
         except SkillNotFoundError:
-            console.print(f'[red]No skill named "{skill}".[/red]')
+            console.print(f'[error]No skill named "{skill}".[/error]')
             raise typer.Exit(code=1)
 
     if removed:
-        console.print(f'[green]Removed "{skill}" from its group.[/green]')
+        console.print(f'[success]Removed "{skill}" from its group.[/success]')
     else:
-        console.print(f'[yellow]"{skill}" wasn\'t in a group.[/yellow]')
+        console.print(f'[warning]"{skill}" wasn\'t in a group.[/warning]')
 
 
 @group_app.command("rename")
@@ -616,13 +615,13 @@ def group_rename(
         try:
             renamed = db.rename_skill(old_name, new_name)
         except SkillNotFoundError:
-            console.print(f'[red]No skill named "{old_name}".[/red]')
+            console.print(f'[error]No skill named "{old_name}".[/error]')
             raise typer.Exit(code=1)
         except SkillAlreadyExistsError:
-            console.print(f'[red]A skill named "{new_name}" already exists.[/red]')
+            console.print(f'[error]A skill named "{new_name}" already exists.[/error]')
             raise typer.Exit(code=1)
 
-    console.print(f'[green]Renamed "{old_name}" to "{renamed.name}".[/green]')
+    console.print(f'[success]Renamed "{old_name}" to "{renamed.name}".[/success]')
 
 
 @group_app.command("list")
@@ -632,12 +631,12 @@ def group_list() -> None:
         groups = db.list_groups()
         if not groups:
             console.print(
-                '[yellow]No groups yet.[/yellow] Create one with [bold]experties group create <name>[/bold], '
+                '[warning]No groups yet.[/warning] Create one with [bold]experties group create <name>[/bold], '
                 "or nest an existing skill into another with [bold]experties group add[/bold]."
             )
             return
 
-        table = Table(title="Groups")
+        table = Table(title="Groups", title_style="brand")
         table.add_column("Group", style="bold")
         table.add_column("Hours", justify="right")
         table.add_column("Rank")
@@ -662,13 +661,13 @@ def plugins() -> None:
     console.print(f"Plugins directory: [bold]{_effective_plugins_dir}[/bold]")
     if not _effective_plugins_dir.is_dir():
         console.print(
-            "[dim]Doesn't exist yet — create it and drop a .py file in to add a command. "
-            "See PLUGINS.md for the format.[/dim]"
+            "[muted]Doesn't exist yet — create it and drop a .py file in to add a command. "
+            "See PLUGINS.md for the format.[/muted]"
         )
         return
 
     if not _loaded_plugins:
-        console.print("[dim]No plugins loaded.[/dim]")
+        console.print("[muted]No plugins loaded.[/muted]")
         return
 
     console.print(f"Loaded ({len(_loaded_plugins)}):")

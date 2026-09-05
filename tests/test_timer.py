@@ -3,6 +3,7 @@ import io
 import pytest
 from rich.console import Console
 
+from experties.theme import EXPERTIES_THEME
 from experties.timer import (
     SLEEP_GAP_THRESHOLD,
     TICK_SECONDS,
@@ -111,7 +112,7 @@ def test_sleep_detected_overwrites_any_previous_message():
 # -- _render_multi (multi-timer watch dialog) -------------------------------
 
 def _rendered(group) -> str:
-    console = Console(width=80, file=io.StringIO(), highlight=False)
+    console = Console(width=80, file=io.StringIO(), highlight=False, theme=EXPERTIES_THEME)
     console.print(group)
     return console.file.getvalue()
 
