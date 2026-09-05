@@ -136,7 +136,7 @@ def _render(skill_name: str, elapsed: float, state: TimerState, message: str) ->
     lines.append(Text.from_markup("[muted][space] pause/resume   [s] stop & save   [c] cancel[/muted]"))
 
     return Panel(
-        Group(body, *lines), title="Experties Timer", title_style="brand", border_style="accent", expand=False
+        Group(body, *lines), title="[brand]Experties Timer[/brand]", border_style="accent", expand=False
     )
 
 
