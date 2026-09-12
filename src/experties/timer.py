@@ -239,34 +239,38 @@ def run_multi_timer_watch(
     selected = 0
     message = ""
 
-    with _RawKeyReader() as reader:
-        while order:
-            # Re-sync from the database every time we (re)enter the dialog
-            # -- not just once at the top -- so real wall-clock time that
-            # passed outside the tick loop (the note prompt after a stop,
-            # or another terminal touching one of these timers) is never
-            # silently missing from what's shown. The actual logged hours
-            # were never at risk either way -- stop_timer() always computes
-            # those fresh from the database, not from this display state --
-            # but the display should never lie about what's really running.
-            fresh_by_name = {info.skill.name: info for info in db.list_active_timers()}
-            for name in list(order):
-                if name not in fresh_by_name:
-                    # Stopped or cancelled elsewhere while this dialog was open.
-                    order.remove(name)
-                    slots.pop(name, None)
-                    continue
-                info = fresh_by_name[name]
-                slots[name].elapsed = info.elapsed_seconds
-                slots[name].state = TimerState.PAUSED if info.is_paused else TimerState.RUNNING
+    while order:
+        # Re-sync from the database every time we (re)enter the dialog
+        # -- not just once at the top -- so real wall-clock time that
+        # passed outside the tick loop (the note prompt after a stop,
+        # or another terminal touching one of these timers) is never
+        # silently missing from what's shown. The actual logged hours
+        # were never at risk either way -- stop_timer() always computes
+        # those fresh from the database, not from this display state --
+        # but the display should never lie about what's really running.
+        fresh_by_name = {info.skill.name: info for info in db.list_active_timers()}
+        for name in list(order):
+            if name not in fresh_by_name:
+                # Stopped or cancelled elsewhere while this dialog was open.
+                order.remove(name)
+                slots.pop(name, None)
+                continue
+            info = fresh_by_name[name]
+            slots[name].elapsed = info.elapsed_seconds
+            slots[name].state = TimerState.PAUSED if info.is_paused else TimerState.RUNNING
 
-            if not order:
-                break
+        if not order:
+            break
 
-            selected = max(0, min(selected, len(order) - 1))
-            action: tuple[str, str | None] = ("", None)
+        selected = max(0, min(selected, len(order) - 1))
+        action: tuple[str, str | None] = ("", None)
 
-            try:
+        # _RawKeyReader is scoped to just this dialog loop, not the note
+        # prompt below -- it disables echo and line editing, and input()
+        # must never run while that's still in effect, or the person
+        # can't see or properly edit what they're typing.
+        try:
+            with _RawKeyReader() as reader:
                 with Live(console=console, refresh_per_second=4) as live:
                     live.update(_render_multi([slots[n] for n in order], selected, message))
                     while True:
@@ -317,23 +321,26 @@ def run_multi_timer_watch(
                             break
 
                         live.update(_render_multi([slots[n] for n in order], selected, message))
-            except KeyboardInterrupt:
-                action = ("quit", None)
+        except KeyboardInterrupt:
+            action = ("quit", None)
 
-            kind, name = action
-            if kind == "quit" or kind == "":
-                return
-            if kind == "cancel":
-                db.cancel_timer(name)
-                order.remove(name)
-                del slots[name]
-                console.print(f'[warning]Timer for "{name}" cancelled \u2014 nothing logged.[/warning]')
-            elif kind == "stop":
-                started_at, hours = db.stop_timer(name)
-                order.remove(name)
-                del slots[name]
-                note = input(f'Add a note for "{name}"? (press Enter to skip) ')
-                commit_session(name, hours, note.strip() or None, started_at)
-                message = ""
+        # Terminal is back to normal settings here -- _RawKeyReader has
+        # exited, so echo and line editing work again for the input()
+        # call below.
+        kind, name = action
+        if kind == "quit" or kind == "":
+            return
+        if kind == "cancel":
+            db.cancel_timer(name)
+            order.remove(name)
+            del slots[name]
+            console.print(f'[warning]Timer for "{name}" cancelled \u2014 nothing logged.[/warning]')
+        elif kind == "stop":
+            started_at, hours = db.stop_timer(name)
+            order.remove(name)
+            del slots[name]
+            note = input(f'Add a note for "{name}"? (press Enter to skip) ')
+            commit_session(name, hours, note.strip() or None, started_at)
+            message = ""
 
     console.print("[muted]No timers left running.[/muted]")
